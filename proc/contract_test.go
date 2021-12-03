@@ -21,8 +21,12 @@ func TestContract(t *testing.T) {
 		assert.NotEmpty(t, c.Events, "ABI events should not be empty: %s", addr)
 		assert.NotEmpty(t, c.Methods, "ABI methods should not be empty: %s", addr)
 
-		// data, _ := json.Marshal(c)
-		// fmt.Println("ABI", string(data))
+		// if data, err := json.Marshal(c.Methods); err == nil {
+		// 	fmt.Println("Methods", c.Address, string(data))
+		// }
+		// if data, err := json.Marshal(c.Events); err == nil {
+		// 	fmt.Println("events", c.Address, string(data))
+		// }
 		// for k, v := range c.Methods {
 		// 	arg, _ := json.Marshal(v.Inputs.TupleElems())
 		// 	fmt.Println("Method input", k, v.Name, string(arg))

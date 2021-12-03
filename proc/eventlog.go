@@ -2,7 +2,6 @@ package proc
 
 import (
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 
 	web3 "github.com/umbracle/go-web3"
@@ -44,17 +43,6 @@ func DecodeEventLog(wlog *web3.Log) *EventLog {
 		result.Event = "UNKNOWN"
 	}
 	fmt.Printf("Event log %d: %s Event %s\n", wlog.LogIndex, wlog.TransactionHash.String(), result.Event)
-	if result.Params != nil {
-		for _, v := range result.Params {
-			value := v.Value
-			if v.Kind.String() != "Bytes" {
-				// replace all []uint8 fields using hex encoding
-				value = HexEncodeUint8Array(v.Value)
-			}
-			if p, err := json.Marshal(value); err == nil {
-				fmt.Printf("Input %s %s %T %s\n", v.Name, v.Kind.String(), v.Value, string(p))
-			}
-		}
-	}
+
 	return result
 }

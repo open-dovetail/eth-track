@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/umbracle/go-web3/abi"
 	"github.com/umbracle/go-web3/jsonrpc"
 )
 
@@ -63,7 +62,7 @@ func (c *Config) GetClient() *jsonrpc.Client {
 	return c.client
 }
 
-func (c *Config) FetchABI(address string) (*abi.ABI, error) {
+func (c *Config) FetchABI(address string) (string, error) {
 	apiLock.Lock()
 	defer apiLock.Unlock()
 
@@ -81,9 +80,9 @@ func (c *Config) FetchABI(address string) (*abi.ABI, error) {
 	url := fmt.Sprintf("https://api.etherscan.io/api?apikey=%s&module=contract&action=getabi&address=%s", c.apiKey, address)
 	data, err := httpGet(url, 0)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	return abi.NewABI(data.(string))
+	return data.(string), nil
 }
 
 // Note: web3.etherscan.Query does not consistently return on consecutive calls, so use my own HTTP calls to etherscan

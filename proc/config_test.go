@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/umbracle/go-web3/abi"
 )
 
 // initialize Ethereum node connection
@@ -50,8 +51,10 @@ func TestConfig(t *testing.T) {
 		"0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"}
 
 	for _, addr := range addrs {
-		ab, err := GetConfig().FetchABI(addr)
+		abiData, err := GetConfig().FetchABI(addr)
 		require.NoError(t, err, "Error fetching ABI from Etherscan: %s", addr)
+		ab, err := abi.NewABI(abiData)
+		require.NoError(t, err, "Invalid ABI data fetched from Etherscan: %s", addr)
 		assert.NotEmpty(t, ab.Events, "ABI events should not be empty: %s", addr)
 		assert.NotEmpty(t, ab.Methods, "ABI methods should not be empty: %s", addr)
 	}

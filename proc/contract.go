@@ -37,15 +37,16 @@ func init() {
 }
 
 type Contract struct {
-	Address     string
-	Name        string
-	Symbol      string
-	Decimals    uint8
-	TotalSupply *big.Int
-	CreateTime  int64
-	Methods     map[string]*abi.Method
-	Events      map[string]*abi.Event
-	AccessTime  int64 // last access time, used to cleanup in-memory cache
+	Address        string
+	Name           string
+	Symbol         string
+	Decimals       uint8
+	TotalSupply    *big.Int
+	UpdatedTime    int64
+	Methods        map[string]*abi.Method
+	Events         map[string]*abi.Event
+	StartEventTime int64 // first collected event time
+	LastEventTime  int64 // last access time, used to cleanup in-memory cache
 }
 
 // singleton contract cache
@@ -59,7 +60,7 @@ func NewContract(address string) (*Contract, error) {
 	contract, ok := contractCache[address]
 	if ok {
 		// fmt.Println("Return contract from cache", address)
-		contract.AccessTime = time.Now().UnixNano() / 1000000
+		contract.LastEventTime = time.Now().UnixNano() / 1000000
 		return contract, nil
 	}
 	conf := GetConfig()
@@ -68,18 +69,25 @@ func NewContract(address string) (*Contract, error) {
 	}
 
 	contract = &Contract{
-		Address:    address,
-		Methods:    map[string]*abi.Method{},
-		Events:     map[string]*abi.Event{},
-		CreateTime: time.Now().Unix(),
-		AccessTime: time.Now().UnixNano() / 1000000,
+		Address:       address,
+		Methods:       map[string]*abi.Method{},
+		Events:        map[string]*abi.Event{},
+		UpdatedTime:   time.Now().Unix(),
+		LastEventTime: time.Now().UnixNano() / 1000000,
 	}
 
-	ab, err := conf.FetchABI(address)
+	// Fetch ABI from etherscan
+	abiData, err := conf.FetchABI(address)
 	if err != nil {
 		// cache contract w/o ABI so won't try again
 		fmt.Println("Cache unknown contract source", address, err)
 		contractCache[address] = contract
+		return nil, err
+	}
+
+	ab, err := abi.NewABI(abiData)
+	if err != nil {
+		fmt.Println("Invalid ABI fetched for address", address, err)
 		return nil, err
 	}
 
@@ -111,13 +119,15 @@ func NewContract(address string) (*Contract, error) {
 		}
 	}
 	contractCache[address] = contract
+
+	// TODO: store contract and abiData in database
 	return contract, nil
 }
 
 // remove cached contract last accessed earlier than minAccessTime
 func CleanupContractCache(minAccessTime int64) {
 	for k, v := range contractCache {
-		if v.AccessTime < minAccessTime {
+		if v.LastEventTime < minAccessTime {
 			delete(contractCache, k)
 		}
 	}
@@ -176,7 +186,7 @@ func DecodeEventData(wlog *web3.Log) (*DecodedData, error) {
 	eventID := wlog.Topics[0].String()
 	event, ok := standardEvents[eventID]
 	if !ok {
-		// find contract method
+		// find contract event
 		contract, err := NewContract(wlog.Address.String())
 		if err != nil {
 			return nil, err
