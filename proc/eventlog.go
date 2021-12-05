@@ -2,8 +2,8 @@ package proc
 
 import (
 	"encoding/hex"
-	"fmt"
 
+	"github.com/golang/glog"
 	web3 "github.com/umbracle/go-web3"
 )
 
@@ -20,7 +20,9 @@ type EventLog struct {
 }
 
 func DecodeEventLog(wlog *web3.Log) *EventLog {
-	fmt.Println("Log:", wlog.LogIndex, len(wlog.Topics), wlog.Topics[0].String(), wlog.Address.String(), hex.EncodeToString(wlog.Data))
+	if glog.V(2) {
+		glog.Infoln("Log:", wlog.LogIndex, len(wlog.Topics), wlog.Topics[0].String(), wlog.Address.String(), hex.EncodeToString(wlog.Data))
+	}
 	result := &EventLog{
 		BlockNumber:  wlog.BlockNumber,
 		LogIndex:     wlog.LogIndex,
@@ -31,7 +33,7 @@ func DecodeEventLog(wlog *web3.Log) *EventLog {
 	}
 	// decode only if event topics exist
 	if len(wlog.Topics) < 1 {
-		fmt.Printf("Event log %d: %s has no topics\n", wlog.LogIndex, wlog.TransactionHash.String())
+		glog.Warningf("Event log %d: %s No topics for contract %s", wlog.LogIndex, wlog.TransactionHash.String(), wlog.Address.String())
 		return result
 	}
 
@@ -39,10 +41,10 @@ func DecodeEventLog(wlog *web3.Log) *EventLog {
 		result.Event = data.Name
 		result.Params = data.Params
 	} else {
-		fmt.Printf("Event log %d: %s Failed decode %+v\n", wlog.LogIndex, wlog.TransactionHash.String(), err)
+		glog.Warningf("Event log %d: %s Failed decode - %s", wlog.LogIndex, wlog.TransactionHash.String(), err.Error())
 		result.Event = "UNKNOWN"
 	}
-	fmt.Printf("Event log %d: %s Event %s\n", wlog.LogIndex, wlog.TransactionHash.String(), result.Event)
+	glog.Infof("Event log %d: %s Event %s", wlog.LogIndex, wlog.TransactionHash.String(), result.Event)
 
 	return result
 }

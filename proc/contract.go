@@ -2,14 +2,16 @@ package proc
 
 import (
 	"encoding/hex"
-	"fmt"
+
 	"math/big"
 	"sync"
 	"time"
 
+	"github.com/golang/glog"
 	"github.com/open-dovetail/eth-track/contract/standard/erc1155"
 	"github.com/open-dovetail/eth-track/contract/standard/erc721"
 	"github.com/open-dovetail/eth-track/contract/standard/erc777"
+	"github.com/pkg/errors"
 	web3 "github.com/umbracle/go-web3"
 	"github.com/umbracle/go-web3/abi"
 )
@@ -59,13 +61,16 @@ func NewContract(address string) (*Contract, error) {
 
 	contract, ok := contractCache[address]
 	if ok {
-		// fmt.Println("Return contract from cache", address)
+		if glog.V(2) {
+			glog.Infof("Found cached contract ABI for address %s methods=%d events=%d", address, len(contract.Methods), len(contract.Events))
+		}
 		contract.LastEventTime = time.Now().UnixNano() / 1000000
 		return contract, nil
 	}
-	conf := GetConfig()
-	if conf == nil {
-		return nil, fmt.Errorf("Cannot find config.  Must configure the process using NewConfig(nodeURL, apiKey, etherscanDelay)")
+	api := GetEtherscanAPI()
+	if api == nil {
+		// Etherscan connection not configured, so quit immediately
+		glog.Fatalln("Cannot find Etherscan config.  Must configure it using NewEtherscanAPI(apiKey, etherscanDelay)")
 	}
 
 	contract = &Contract{
@@ -77,18 +82,17 @@ func NewContract(address string) (*Contract, error) {
 	}
 
 	// Fetch ABI from etherscan
-	abiData, err := conf.FetchABI(address)
+	abiData, err := api.FetchABI(address)
 	if err != nil {
-		// cache contract w/o ABI so won't try again
-		fmt.Println("Cache unknown contract source", address, err)
-		contractCache[address] = contract
-		return nil, err
+		// Etherscan connection down, so quit immediately
+		glog.Fatalf("Etherscan API failed to return ABI for address %s", address)
 	}
 
 	ab, err := abi.NewABI(abiData)
 	if err != nil {
-		fmt.Println("Invalid ABI fetched for address", address, err)
-		return nil, err
+		// cache contract w/o ABI so won't try again
+		contractCache[address] = contract
+		return nil, errors.Wrapf(err, "Fetched invalid ABI for address %s", address)
 	}
 
 	if len(ab.Methods) > 0 {
@@ -102,7 +106,7 @@ func NewContract(address string) (*Contract, error) {
 		}
 	}
 
-	if client := conf.GetClient(); client != nil {
+	if client := GetEthereumClient(); client != nil {
 		// try to set ERC token properties
 		token := erc777.NewERC777(web3.HexToAddress(address), client)
 		if dec, err := token.Decimals(); err == nil {
@@ -119,6 +123,7 @@ func NewContract(address string) (*Contract, error) {
 		}
 	}
 	contractCache[address] = contract
+	glog.Infof("Cache contract %s Symbol %s methods=%d events=%d", address, contract.Symbol, len(contract.Methods), len(contract.Events))
 
 	// TODO: store contract and abiData in database
 	return contract, nil
@@ -155,7 +160,7 @@ func DecodeTransactionInput(input []byte, address string) (*DecodedData, error) 
 			return nil, err
 		}
 		if method, ok = contract.Methods[methodID]; !ok {
-			return nil, fmt.Errorf("Unknown method 0x%s", methodID)
+			return nil, errors.Errorf("Unknown method %s 0x%s", address, methodID)
 		}
 	}
 
@@ -165,7 +170,7 @@ func DecodeTransactionInput(input []byte, address string) (*DecodedData, error) 
 	}
 	dmap, ok := data.(map[string]interface{})
 	if !ok {
-		return nil, fmt.Errorf("Decoded input data %T is not a map", data)
+		return nil, errors.Errorf("Decoded input data %T is not a map", data)
 	}
 	dec := &DecodedData{
 		Name:   method.Name,
@@ -184,7 +189,18 @@ func DecodeTransactionInput(input []byte, address string) (*DecodedData, error) 
 
 func DecodeEventData(wlog *web3.Log) (*DecodedData, error) {
 	eventID := wlog.Topics[0].String()
-	event, ok := standardEvents[eventID]
+	var event *abi.Event
+	var ok bool
+	var data map[string]interface{}
+
+	if event, ok = standardEvents[eventID]; ok {
+		// try to parse w/ standard event
+		var err error
+		if data, err = event.ParseLog(wlog); err != nil {
+			// not a standard event
+			ok = false
+		}
+	}
 	if !ok {
 		// find contract event
 		contract, err := NewContract(wlog.Address.String())
@@ -192,13 +208,11 @@ func DecodeEventData(wlog *web3.Log) (*DecodedData, error) {
 			return nil, err
 		}
 		if event, ok = contract.Events[eventID]; !ok {
-			return nil, fmt.Errorf("Unknown event %s", eventID)
+			return nil, errors.Errorf("Unknown event %s %s", wlog.Address.String(), eventID)
 		}
-	}
-
-	data, err := event.ParseLog(wlog)
-	if err != nil {
-		return nil, err
+		if data, err = event.ParseLog(wlog); err != nil {
+			return nil, errors.Wrapf(err, "Error parsing log %s", wlog.Address.String())
+		}
 	}
 
 	dec := &DecodedData{

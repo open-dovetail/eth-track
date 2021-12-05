@@ -1,9 +1,9 @@
 package proc
 
 import (
-	"fmt"
 	"math/big"
 
+	"github.com/golang/glog"
 	web3 "github.com/umbracle/go-web3"
 )
 
@@ -42,7 +42,12 @@ func DecodeTransaction(tx *web3.Transaction) *Transaction {
 
 	// decode only if method is specified in the input data
 	if len(tx.Input) < 4 {
-		fmt.Printf("Transaction %d: %s No decode\n", tx.TxnIndex, tx.Hash.String())
+		glog.Infof("Transaction %d: %s No decode", tx.TxnIndex, tx.Hash.String())
+		return result
+	}
+
+	if tx.To == nil {
+		glog.Warningf("Transaction %d: %s No contract address", tx.TxnIndex, tx.Hash.String())
 		return result
 	}
 
@@ -50,17 +55,17 @@ func DecodeTransaction(tx *web3.Transaction) *Transaction {
 		result.Method = data.Name
 		result.Params = data.Params
 	} else {
-		fmt.Printf("Transaction %d: %s Failed decode %+v\n", tx.TxnIndex, tx.Hash.String(), err)
+		glog.Warningf("Transaction %d: %s Failed decode - %s", tx.TxnIndex, tx.Hash.String(), err.Error())
 		result.Method = "UNKNOWN"
 	}
-	fmt.Printf("Transaction %d: %s Method %s\n", tx.TxnIndex, tx.Hash.String(), result.Method)
+	glog.Infof("Transaction %d: %s Method %s", tx.TxnIndex, tx.Hash.String(), result.Method)
 	return result
 }
 
 // Return false if transaction failed, true if succeeded
 func GetTransactionStatus(txHash string) (bool, error) {
 	var data map[string]interface{}
-	if err := GetConfig().GetClient().Call("eth_getTransactionReceipt", &data, txHash); err != nil {
+	if err := GetEthereumClient().Call("eth_getTransactionReceipt", &data, txHash); err != nil {
 		return false, err
 	}
 	return data["status"] == "0x1", nil

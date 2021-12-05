@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	clickhouse "github.com/mailru/go-clickhouse"
@@ -36,6 +37,11 @@ type ParamsValuer struct {
 	ValueDouble driver.Valuer
 }
 
+// singleton
+var db *ClickHouseConnection
+var txn *ClickHouseTransaction
+var txnLock = &sync.Mutex{}
+
 // open a clickhouse db connection, e.g.
 // NewClickHouseConnection("http://127.0.0.1:8123", "default", map[string]string{"debug": "1"})
 func NewClickHouseConnection(dbURL string, dbName string, params map[string]string) (*ClickHouseConnection, error) {
@@ -57,7 +63,27 @@ func NewClickHouseConnection(dbURL string, dbName string, params map[string]stri
 	if err := connect.Open(); err != nil {
 		return nil, err
 	}
+	db = connect
 	return connect, nil
+}
+
+func GetDBConnection() *ClickHouseConnection {
+	return db
+}
+
+func GetDBTx() (*ClickHouseTransaction, error) {
+	txnLock.Lock()
+	defer txnLock.Unlock()
+
+	if txn != nil {
+		return txn, nil
+	}
+	t, err := db.startTx()
+	if err != nil {
+		return nil, err
+	}
+	txn = t
+	return t, err
 }
 
 func (c *ClickHouseConnection) Open() error {
@@ -77,37 +103,55 @@ func (c *ClickHouseConnection) Close() error {
 	return c.connection.Close()
 }
 
-func (c *ClickHouseConnection) StartTx() (*ClickHouseTransaction, error) {
+func (c *ClickHouseConnection) Query(sql string) (*sql.Rows, error) {
+	return c.connection.Query(sql)
+}
+
+func (c *ClickHouseConnection) startTx() (*ClickHouseTransaction, error) {
+	if txn != nil {
+		return txn, fmt.Errorf("Previous transaction has not been committed or rolled back")
+	}
+
 	tx, err := c.connection.Begin()
 	if err != nil {
 		return nil, err
 	}
 	// tx.Prepare(`set profile='async_insert'`)
-	t := &ClickHouseTransaction{
+	txn = &ClickHouseTransaction{
 		tx:    tx,
 		stmts: make(map[string]*sql.Stmt),
 	}
-	if err := t.prepareContractStmt(); err != nil {
+	if err := txn.prepareContractStmt(); err != nil {
 		return nil, err
 	}
-	if err := t.prepareBlockStmt(); err != nil {
+	if err := txn.prepareBlockStmt(); err != nil {
 		return nil, err
 	}
-	if err := t.prepareTransactionStmt(); err != nil {
+	if err := txn.prepareTransactionStmt(); err != nil {
 		return nil, err
 	}
-	if err := t.prepareLogStmt(); err != nil {
+	if err := txn.prepareLogStmt(); err != nil {
 		return nil, err
 	}
-	return t, nil
+	return txn, nil
 }
 
 func (t *ClickHouseTransaction) CommitTx() error {
-	return t.tx.Commit()
+	txnLock.Lock()
+	defer txnLock.Unlock()
+
+	err := t.tx.Commit()
+	txn = nil
+	return err
 }
 
 func (t *ClickHouseTransaction) RollbackTx() error {
-	return t.tx.Rollback()
+	txnLock.Lock()
+	defer txnLock.Unlock()
+
+	err := t.tx.Rollback()
+	txn = nil
+	return err
 }
 
 func (t *ClickHouseTransaction) prepareContractStmt() error {
@@ -135,6 +179,9 @@ func (t *ClickHouseTransaction) prepareContractStmt() error {
 }
 
 func (t *ClickHouseTransaction) InsertContract(contract *proc.Contract, abi string) error {
+	txnLock.Lock()
+	defer txnLock.Unlock()
+
 	stmt, ok := t.stmts["contract"]
 	if !ok {
 		return fmt.Errorf("Contract statement is not prepared for ClickHouse transaction")
@@ -178,6 +225,9 @@ func (t *ClickHouseTransaction) prepareBlockStmt() error {
 }
 
 func (t *ClickHouseTransaction) InsertBlock(block *proc.Block) error {
+	txnLock.Lock()
+	defer txnLock.Unlock()
+
 	stmt, ok := t.stmts["block"]
 	if !ok {
 		return fmt.Errorf("block statement is not prepared for ClickHouse transaction")
@@ -228,6 +278,9 @@ func (t *ClickHouseTransaction) prepareTransactionStmt() error {
 }
 
 func (t *ClickHouseTransaction) InsertTransaction(transaction *proc.Transaction) error {
+	txnLock.Lock()
+	defer txnLock.Unlock()
+
 	stmt, ok := t.stmts["transaction"]
 	if !ok {
 		return fmt.Errorf("transaction statement is not prepared for ClickHouse transaction")
@@ -287,6 +340,9 @@ func (t *ClickHouseTransaction) prepareLogStmt() error {
 }
 
 func (t *ClickHouseTransaction) InsertLog(eventlog *proc.EventLog) error {
+	txnLock.Lock()
+	defer txnLock.Unlock()
+
 	stmt, ok := t.stmts["log"]
 	if !ok {
 		return fmt.Errorf("eventlog statement is not prepared for ClickHouse transaction")

@@ -8,61 +8,63 @@ import (
 	"sync"
 	"time"
 
+	"github.com/golang/glog"
 	"github.com/umbracle/go-web3/jsonrpc"
 )
 
-type Config struct {
-	nodeURL        string // Ethereum node URL
+type EtherscanAPI struct {
 	apiKey         string // etherscan API key
 	etherscanDelay int    // delay of consecutive etherscan API invocation in ms
 	apiTime        int64  // Unix millis of last etherscan API invocation
-	client         *jsonrpc.Client
 }
 
-// singleton config
-var config *Config
+type EthereumClient struct {
+	nodeURL string // Ethereum node URL
+	client  *jsonrpc.Client
+}
+
+// singleton
+var api *EtherscanAPI
 var apiLock = &sync.Mutex{}
+var eth *EthereumClient
 
-func NewConfig(nodeURL string, apiKey string, etherscanDelay int) (*Config, error) {
-	if config != nil {
-		return config, nil
-	}
-
-	c := &Config{
-		nodeURL: nodeURL,
-		apiKey:  apiKey,
-	}
+func NewEtherscanAPI(apiKey string, etherscanDelay int) *EtherscanAPI {
+	api = &EtherscanAPI{apiKey: apiKey}
 	if etherscanDelay > 0 {
-		c.etherscanDelay = etherscanDelay
+		api.etherscanDelay = etherscanDelay
 	}
-	if err := c.Connect(); err != nil {
+	return api
+}
+
+func GetEtherscanAPI() *EtherscanAPI {
+	return api
+}
+
+func NewEthereumClient(nodeURL string) (*EthereumClient, error) {
+	client, err := jsonrpc.NewClient(nodeURL)
+	if err != nil {
 		return nil, err
 	}
-	config = c
-	return config, nil
-}
-
-func GetConfig() *Config {
-	return config
-}
-
-func (c *Config) Connect() error {
-	if c.client != nil {
-		c.client.Close()
+	eth = &EthereumClient{
+		nodeURL: nodeURL,
+		client:  client,
 	}
-	client, err := jsonrpc.NewClient(c.nodeURL)
-	if err != nil {
-		return err
+	return eth, nil
+}
+
+func CloseEthereumClient() error {
+	return eth.client.Close()
+}
+
+func GetEthereumClient() *jsonrpc.Client {
+	if eth == nil {
+		return nil
 	}
-	c.client = client
-	return nil
+	return eth.client
 }
 
-func (c *Config) GetClient() *jsonrpc.Client {
-	return c.client
-}
-
-func (c *Config) FetchABI(address string) (string, error) {
+// calls etherscan to fetch contract ABI - control the delay of calls so the rate is no more than 5 per second
+func (c *EtherscanAPI) FetchABI(address string) (string, error) {
 	apiLock.Lock()
 	defer apiLock.Unlock()
 
@@ -71,7 +73,9 @@ func (c *Config) FetchABI(address string) (string, error) {
 		// control etherscan call rate
 		delay := int64(c.etherscanDelay) - (int64(time.Now().UnixNano()/1000000) - c.apiTime)
 		if delay > 0 {
-			fmt.Printf("Sleep %d ms\n", delay)
+			if glog.V(2) {
+				glog.Infof("Sleep %d ms", delay)
+			}
 			time.Sleep(time.Duration(delay) * time.Millisecond)
 		}
 		c.apiTime = int64(time.Now().UnixNano() / 1000000)

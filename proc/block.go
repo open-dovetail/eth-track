@@ -1,9 +1,9 @@
 package proc
 
 import (
-	"fmt"
 	"math/big"
 
+	"github.com/golang/glog"
 	web3 "github.com/umbracle/go-web3"
 )
 
@@ -22,7 +22,7 @@ type Block struct {
 
 // return block number at the delayed height from the current block
 func LastConfirmedBlock(blockDelay int) (uint64, error) {
-	client := GetConfig().GetClient()
+	client := GetEthereumClient()
 	lastBlock, err := client.Eth().BlockNumber()
 	if err != nil {
 		return 0, err
@@ -40,7 +40,7 @@ func LastConfirmedBlock(blockDelay int) (uint64, error) {
 }
 
 func DecodeBlockByNumber(blockNumber uint64) (*Block, error) {
-	block, err := GetConfig().GetClient().Eth().GetBlockByNumber(web3.BlockNumber(blockNumber), true)
+	block, err := GetEthereumClient().Eth().GetBlockByNumber(web3.BlockNumber(blockNumber), true)
 	if err != nil {
 		return nil, err
 	}
@@ -48,7 +48,7 @@ func DecodeBlockByNumber(blockNumber uint64) (*Block, error) {
 }
 
 func DecodeBlockByHash(blockHash web3.Hash) (*Block, error) {
-	block, err := GetConfig().GetClient().Eth().GetBlockByHash(blockHash, true)
+	block, err := GetEthereumClient().Eth().GetBlockByHash(blockHash, true)
 	if err != nil {
 		return nil, err
 	}
@@ -56,7 +56,7 @@ func DecodeBlockByHash(blockHash web3.Hash) (*Block, error) {
 }
 
 func DecodeBlock(block *web3.Block) (*Block, error) {
-	fmt.Printf("Block %d: %s @ %d\n", block.Number, block.Hash.String(), block.Timestamp)
+	glog.Infof("Block %d: %s @ %d", block.Number, block.Hash.String(), block.Timestamp)
 	txLen := len(block.Transactions)
 	result := &Block{
 		Hash:         block.Hash.String(),
@@ -81,7 +81,7 @@ func DecodeBlock(block *web3.Block) (*Block, error) {
 func (b *Block) DecodeEvents() error {
 	// Note: client.Eth().GetLogs(&logFilter) does not work with `BlockHash` filter, so use base RPC call here
 	var wlogs []*web3.Log
-	if err := GetConfig().GetClient().Call("eth_getLogs", &wlogs, map[string]string{"BlockHash": b.Hash}); err != nil {
+	if err := GetEthereumClient().Call("eth_getLogs", &wlogs, map[string]string{"BlockHash": b.Hash}); err != nil {
 		return err
 	}
 	b.EventLogs = make([]*EventLog, len(wlogs), len(wlogs))

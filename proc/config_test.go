@@ -26,7 +26,8 @@ func setup() error {
 	}
 	fmt.Println("ETHERSCAN_APIKEY:", apiKey)
 
-	_, err := NewConfig(url, apiKey, 200)
+	NewEtherscanAPI(apiKey, 200)
+	_, err := NewEthereumClient(url)
 	return err
 }
 
@@ -40,10 +41,10 @@ func TestMain(m *testing.M) {
 	os.Exit(status)
 }
 
-func TestConfig(t *testing.T) {
+func TestEtherscanAPI(t *testing.T) {
 
-	client := GetConfig().GetClient()
-	assert.NotNil(t, client, "Ethereum client should not be nil")
+	api := GetEtherscanAPI()
+	assert.NotNil(t, api, "Etherscan config should not be nil")
 
 	addrs := []string{
 		"0x6b175474e89094c44da98b954eedeac495271d0f",
@@ -51,7 +52,7 @@ func TestConfig(t *testing.T) {
 		"0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"}
 
 	for _, addr := range addrs {
-		abiData, err := GetConfig().FetchABI(addr)
+		abiData, err := api.FetchABI(addr)
 		require.NoError(t, err, "Error fetching ABI from Etherscan: %s", addr)
 		ab, err := abi.NewABI(abiData)
 		require.NoError(t, err, "Invalid ABI data fetched from Etherscan: %s", addr)
