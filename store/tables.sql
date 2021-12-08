@@ -13,7 +13,6 @@ CREATE TABLE ethdb.contracts
     `LastEventDate` Date,
     `ABI` String
 ) ENGINE = ReplacingMergeTree()
-PARTITION BY toYYYYMM(LastEventDate)
 ORDER BY (Address);
 
 DROP TABLE IF EXISTS ethdb.blocks;
@@ -26,8 +25,9 @@ CREATE TABLE ethdb.blocks
     `Difficulty` Float64,
     `GasLimit` UInt64,
     `GasUsed` UInt64,
-    `BlockTime` DateTime
-) ENGINE = MergeTree()
+    `Status` Int8,
+    `BlockTime` DateTime('UTC')
+) ENGINE = CollapsingMergeTree(Status)
 PARTITION BY toYYYYMM(BlockTime)
 ORDER BY (BlockTime, Number);
 
@@ -37,7 +37,7 @@ CREATE TABLE ethdb.transactions
     `Hash` FixedString(64),
     `BlockNumber` UInt64,
     `TxnIndex` UInt64,
-    `Status` UInt8,
+    `Status` Int8,
     `From` FixedString(40),
     `To` FixedString(40),
     `Method` String,
@@ -50,8 +50,8 @@ CREATE TABLE ethdb.transactions
     `Gas` UInt64,
     `Value` Float64,
     `Nonce` UInt64,
-    `BlockTime` DateTime
-) ENGINE = MergeTree()
+    `BlockTime` DateTime('UTC')
+) ENGINE = CollapsingMergeTree(Status)
 PARTITION BY toYYYYMM(BlockTime)
 ORDER BY (To, BlockTime, Hash);
 
@@ -60,17 +60,17 @@ CREATE TABLE ethdb.logs
 (
     `BlockNumber` UInt64,
     `LogIndex` UInt64,
-    `Removed` UInt8,
+    `Removed` Int8,
     `TxnIndex` UInt64,
     `TxnHash` FixedString(64),
-    `ContractAddr` FixedString(40),
+    `Address` FixedString(40),
     `Event` String,
     `Params` Nested(
         Name String,
         Seq UInt8,
         ValueString String,
         ValueDouble Float64),
-    `BlockTime` DateTime
-) ENGINE = MergeTree()
+    `BlockTime` DateTime('UTC')
+) ENGINE = CollapsingMergeTree(Removed)
 PARTITION BY toYYYYMM(BlockTime)
-ORDER BY (ContractAddr, BlockTime, BlockNumber, LogIndex);
+ORDER BY (Address, BlockTime, BlockNumber, LogIndex);

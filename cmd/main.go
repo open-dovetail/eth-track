@@ -1,10 +1,8 @@
 package main
 
 import (
-	"encoding/hex"
 	"flag"
 	"os"
-	"time"
 
 	"github.com/golang/glog"
 
@@ -18,6 +16,7 @@ type Config struct {
 	nodeURL        string // Ethereum node URL
 	apiKey         string // etherscan API key
 	etherscanDelay int    // delay of consecutive etherscan API invocation in ms
+	blockDelay     int    // blockchain height delay for last confirmed block
 	dbURL          string // clickhouse URL
 	dbName         string // clickhouse database name
 	dbUser         string // clickhouse user name
@@ -28,9 +27,10 @@ var config = &Config{}
 
 // Initial values of the command-line args
 func init() {
-	flag.StringVar(&config.nodeURL, "nodeURL", "https://mainnet.infura.io", "Ethereum node URL")
+	flag.StringVar(&config.nodeURL, "nodeURL", "http://localhost:8545", "Ethereum node URL")
 	flag.StringVar(&config.apiKey, "apiKey", "", "Etherscan API key")
-	flag.IntVar(&config.etherscanDelay, "etherscanDelay", 200, "delay in millis between etherscan API calls")
+	flag.IntVar(&config.etherscanDelay, "etherscanDelay", 350, "delay in millis between etherscan API calls")
+	flag.IntVar(&config.blockDelay, "blockDelay", 12, "blockchain height delay for last confirmed block")
 	flag.StringVar(&config.dbURL, "dbURL", "http://127.0.0.1:8123", "Etherscan API key")
 	flag.StringVar(&config.dbName, "dbName", "ethdb", "Etherscan API key")
 	flag.StringVar(&config.dbUser, "dbUser", "default", "Etherscan API key")
@@ -134,93 +134,21 @@ func main() {
 	}
 
 	testDecode()
-	// testClickHouse()
 }
 
 func testDecode() {
-	// get contract defs
-	dai := "0x6b175474e89094c44da98b954eedeac495271d0f"
-	c, err := proc.NewContract(dai)
-	if err != nil {
-		glog.Fatalf("Failed to retrieve contract for DAI: %+v", err)
-	}
-	glog.Infoln("DAI token properties:", c.Name, c.Symbol, c.Decimals, c.TotalSupply, len(c.Methods), (c.Events))
-	for i, mth := range c.Methods {
-		glog.Infoln("Method:", i, mth.Name, hex.EncodeToString(mth.ID()), mth.Inputs.TupleElems(), mth.Inputs.Kind())
-	}
 
 	// get last confirmed block, assume confirmed at 12 height before last known block
-	lastBlock, err := proc.LastConfirmedBlock(12)
+	lastBlock, err := proc.LastConfirmedBlock(config.blockDelay)
 	if err != nil {
 		glog.Fatalf("Failed to retrieve last confirmed block: %+v", err)
 	}
 	glog.Infof("Last block number: %d", lastBlock)
 
-	lastBlock = 13742419
+	// lastBlock = 13742419
 	block, err := proc.DecodeBlockByNumber(lastBlock)
 	if err != nil {
 		glog.Fatalf("Failed to decode block %d: %+v", lastBlock, err)
 	}
 	glog.Infof("Block %d: %s @ %d; Transactions: %d; Events: %d", block.Number, block.Hash, block.BlockTime, len(block.Transactions), len(block.EventLogs))
-
-	// get latest code of a contract -- go-web3/jsonrpc/eth.go does not work if block is not known
-	// so use direct client call -- this call returns only binary, not source code, so not useful
-	// var res string
-	// if err := client.Call("eth_getCode", &res, "0x4fabb145d64652a948d72533023f6e7a623c7c53", "latest"); err != nil {
-	// 	panic(err)
-	// }
-	// fmt.Println("Contract:", res)
-
-	// fmt.Println(block)
-}
-
-func testClickHouse() {
-	tx, err := store.GetDBTx()
-	if err != nil {
-		glog.Fatalf("Failed to start DB Tx: %+v", err)
-	}
-	if err := tx.RollbackTx(); err != nil {
-		glog.Fatalf("Failed to rollback DB Tx: %+v", err)
-	}
-
-	connect, err := store.NewClickHouseConnection("http://127.0.0.1:8123", "default", map[string]string{"password": "clickhouse", "debug": "1"})
-	if err != nil {
-		glog.Fatalf("Failed to connect to default db: %+v", err)
-	}
-	rows, err := connect.Query(`
-			SELECT
-				country_code,
-				os_id,
-				browser_id,
-				categories,
-				action_day,
-				action_time
-			FROM
-				example`)
-
-	if err != nil {
-		glog.Fatalf("Failed query: %+v", err)
-	}
-
-	for rows.Next() {
-		var (
-			country               string
-			os, browser           uint8
-			categories            []int16
-			actionDay, actionTime time.Time
-		)
-		if err := rows.Scan(
-			&country,
-			&os,
-			&browser,
-			&categories,
-			&actionDay,
-			&actionTime,
-		); err != nil {
-			glog.Fatalf("Failed retrieving row: %+v", err)
-		}
-		glog.Infof("country: %s, os: %d, browser: %d, categories: %v, action_day: %s, action_time: %s",
-			country, os, browser, categories, actionDay, actionTime,
-		)
-	}
 }

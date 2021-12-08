@@ -19,7 +19,7 @@ type EventLog struct {
 	BlockTime    int64
 }
 
-func DecodeEventLog(wlog *web3.Log) *EventLog {
+func DecodeEventLog(wlog *web3.Log, blockTime int64) *EventLog {
 	if glog.V(2) {
 		glog.Infoln("Log:", wlog.LogIndex, len(wlog.Topics), wlog.Topics[0].String(), wlog.Address.String(), hex.EncodeToString(wlog.Data))
 	}
@@ -30,6 +30,7 @@ func DecodeEventLog(wlog *web3.Log) *EventLog {
 		TxnIndex:     wlog.TransactionIndex,
 		TxnHash:      wlog.TransactionHash.String(),
 		ContractAddr: wlog.Address.String(),
+		BlockTime:    blockTime,
 	}
 	// decode only if event topics exist
 	if len(wlog.Topics) < 1 {
@@ -37,7 +38,7 @@ func DecodeEventLog(wlog *web3.Log) *EventLog {
 		return result
 	}
 
-	if data, err := DecodeEventData(wlog); err == nil {
+	if data, err := DecodeEventData(wlog, blockTime); err == nil {
 		result.Event = data.Name
 		result.Params = data.Params
 	} else {

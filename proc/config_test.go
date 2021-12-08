@@ -7,6 +7,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/umbracle/go-web3/abi"
@@ -27,8 +28,10 @@ func setup() error {
 	fmt.Println("ETHERSCAN_APIKEY:", apiKey)
 
 	NewEtherscanAPI(apiKey, 200)
-	_, err := NewEthereumClient(url)
-	return err
+	if _, err := NewEthereumClient(url); err != nil {
+		return errors.Wrapf(err, "Failed to connect to Ethereum node at %s", url)
+	}
+	return nil
 }
 
 func TestMain(m *testing.M) {
@@ -50,13 +53,14 @@ func TestEtherscanAPI(t *testing.T) {
 		"0x6b175474e89094c44da98b954eedeac495271d0f",
 		"0xdac17f958d2ee523a2206206994597c13d831ec7",
 		"0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"}
+	expected := [][]int{{22, 3}, {32, 11}, {5, 2}}
 
-	for _, addr := range addrs {
+	for i, addr := range addrs {
 		abiData, err := api.FetchABI(addr)
 		require.NoError(t, err, "Error fetching ABI from Etherscan: %s", addr)
 		ab, err := abi.NewABI(abiData)
 		require.NoError(t, err, "Invalid ABI data fetched from Etherscan: %s", addr)
-		assert.NotEmpty(t, ab.Events, "ABI events should not be empty: %s", addr)
-		assert.NotEmpty(t, ab.Methods, "ABI methods should not be empty: %s", addr)
+		assert.Equal(t, expected[i][0], len(ab.Methods), "ABI method count does not match for contract: %s", addr)
+		assert.Equal(t, expected[i][1], len(ab.Events), "ABI event count does not match for contract: %s", addr)
 	}
 }

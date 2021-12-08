@@ -3,7 +3,6 @@ package proc
 // Run all unit test: `go test -v`
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -19,7 +18,6 @@ func TestTransactionStatus(t *testing.T) {
 	for i, tx := range txs {
 		status, err := GetTransactionStatus(tx)
 		require.NoError(t, err, "failed to get transaction status %s", tx)
-		fmt.Println(tx, status)
 		expected := i > 1
 		assert.Equal(t, expected, status, "Not expected status '%t' for transaction %s", status, tx)
 	}

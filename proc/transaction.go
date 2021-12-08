@@ -23,7 +23,7 @@ type Transaction struct {
 	BlockTime   int64
 }
 
-func DecodeTransaction(tx *web3.Transaction) *Transaction {
+func DecodeTransaction(tx *web3.Transaction, blockTime int64) *Transaction {
 	// fmt.Println("Transaction:", tx.TxnIndex, tx.From.String(), tx.To.String(), tx.Value, tx.Hash.String(), hex.EncodeToString(tx.Input))
 	result := &Transaction{
 		Hash:        tx.Hash.String(),
@@ -35,6 +35,7 @@ func DecodeTransaction(tx *web3.Transaction) *Transaction {
 		Gas:         tx.Gas,
 		Value:       tx.Value,
 		Nonce:       tx.Nonce,
+		BlockTime:   blockTime,
 	}
 	if tx.To != nil {
 		result.To = tx.To.String()
@@ -51,7 +52,7 @@ func DecodeTransaction(tx *web3.Transaction) *Transaction {
 		return result
 	}
 
-	if data, err := DecodeTransactionInput(tx.Input, tx.To.String()); err == nil {
+	if data, err := DecodeTransactionInput(tx.Input, tx.To.String(), blockTime); err == nil {
 		result.Method = data.Name
 		result.Params = data.Params
 	} else {

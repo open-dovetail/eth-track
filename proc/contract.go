@@ -49,84 +49,129 @@ type Contract struct {
 	Events         map[string]*abi.Event
 	StartEventTime int64 // first collected event time
 	LastEventTime  int64 // last access time, used to cleanup in-memory cache
+	ABI            string
 }
 
 // singleton contract cache
 var contractCache = map[string]*Contract{}
 var contractLock = &sync.Mutex{}
 
-func NewContract(address string) (*Contract, error) {
+func GetContract(address string, blockTime int64) (*Contract, error) {
 	contractLock.Lock()
 	defer contractLock.Unlock()
 
-	contract, ok := contractCache[address]
-	if ok {
+	// find cached contract
+	if contract, ok := contractCache[address]; ok {
 		if glog.V(2) {
 			glog.Infof("Found cached contract ABI for address %s methods=%d events=%d", address, len(contract.Methods), len(contract.Events))
 		}
-		contract.LastEventTime = time.Now().UnixNano() / 1000000
+		if len(contract.ABI) == 0 {
+			return nil, errors.Errorf("No ABI found for contract %s", address)
+		}
+		if blockTime > contract.LastEventTime {
+			contract.LastEventTime = blockTime
+		}
+		if blockTime < contract.StartEventTime {
+			contract.StartEventTime = blockTime
+		}
 		return contract, nil
 	}
+
+	// fetch contract from db
+	// TODO
+
+	contract, err := NewContract(address, blockTime)
+	if err != nil {
+		return nil, err
+	}
+	// TODO: store contract and abiData in database
+	return contract, err
+}
+
+func NewContract(address string, blockTime int64) (*Contract, error) {
+	// check etherscan API config
 	api := GetEtherscanAPI()
 	if api == nil {
 		// Etherscan connection not configured, so quit immediately
 		glog.Fatalln("Cannot find Etherscan config.  Must configure it using NewEtherscanAPI(apiKey, etherscanDelay)")
 	}
 
-	contract = &Contract{
-		Address:       address,
-		Methods:       map[string]*abi.Method{},
-		Events:        map[string]*abi.Event{},
-		UpdatedTime:   time.Now().Unix(),
-		LastEventTime: time.Now().UnixNano() / 1000000,
+	eventTime := blockTime
+	if blockTime <= 0 {
+		eventTime = time.Now().Unix()
+	}
+	contract := &Contract{
+		Address:        address,
+		UpdatedTime:    time.Now().Unix(),
+		StartEventTime: eventTime,
+		LastEventTime:  eventTime,
 	}
 
 	// Fetch ABI from etherscan
-	abiData, err := api.FetchABI(address)
-	if err != nil {
+	if data, err := api.FetchABI(address); err == nil {
+		contract.ABI = data
+	} else {
 		// Etherscan connection down, so quit immediately
 		glog.Fatalf("Etherscan API failed to return ABI for address %s", address)
 	}
 
-	ab, err := abi.NewABI(abiData)
-	if err != nil {
+	if err := contract.ParseABI(); err != nil {
 		// cache contract w/o ABI so won't try again
+		contract.ABI = ""
 		contractCache[address] = contract
-		return nil, errors.Wrapf(err, "Fetched invalid ABI for address %s", address)
+		return nil, errors.Wrapf(err, "Invalid ABI for address %s", address)
 	}
 
+	contract.updateERC20Properties()
+
+	contractCache[address] = contract
+	glog.Infof("Fetched contract %s Symbol %s methods=%d events=%d", address, contract.Symbol, len(contract.Methods), len(contract.Events))
+	return contract, nil
+}
+
+func (c *Contract) ParseABI() error {
+	ab, err := abi.NewABI(c.ABI)
+	if err != nil {
+		return errors.Wrapf(err, "'%s'", c.ABI)
+	}
+
+	if c.Methods == nil {
+		c.Methods = make(map[string]*abi.Method)
+	}
 	if len(ab.Methods) > 0 {
 		for _, mth := range ab.Methods {
-			contract.Methods[hex.EncodeToString(mth.ID())] = mth
+			c.Methods[hex.EncodeToString(mth.ID())] = mth
 		}
+	}
+
+	if c.Events == nil {
+		c.Events = make(map[string]*abi.Event)
 	}
 	if len(ab.Events) > 0 {
 		for _, evt := range ab.Events {
-			contract.Events[evt.ID().String()] = evt
+			c.Events[evt.ID().String()] = evt
 		}
 	}
+	return nil
+}
 
+func (c *Contract) updateERC20Properties() {
 	if client := GetEthereumClient(); client != nil {
 		// try to set ERC token properties
-		token := erc777.NewERC777(web3.HexToAddress(address), client)
+		token := erc777.NewERC777(web3.HexToAddress(c.Address), client)
 		if dec, err := token.Decimals(); err == nil {
-			contract.Decimals = dec
+			c.Decimals = dec
 		}
 		if name, err := token.Name(); err == nil {
-			contract.Name = name
+			c.Name = name
 		}
 		if symbol, err := token.Symbol(); err == nil {
-			contract.Symbol = symbol
+			c.Symbol = symbol
 		}
 		if totalSupply, err := token.TotalSupply(); err == nil {
-			contract.TotalSupply = totalSupply
+			c.TotalSupply = totalSupply
 		}
 	}
-	contractCache[address] = contract
-	glog.Infof("Cache contract %s Symbol %s methods=%d events=%d", address, contract.Symbol, len(contract.Methods), len(contract.Events))
-
-	// TODO: store contract and abiData in database
-	return contract, nil
 }
 
 // remove cached contract last accessed earlier than minAccessTime
@@ -150,12 +195,12 @@ type DecodedData struct {
 	Params []*NamedValue
 }
 
-func DecodeTransactionInput(input []byte, address string) (*DecodedData, error) {
+func DecodeTransactionInput(input []byte, address string, blockTime int64) (*DecodedData, error) {
 	methodID := hex.EncodeToString(input[:4])
 	method, ok := standardMethods[methodID]
 	if !ok {
 		// find contract method
-		contract, err := NewContract(address)
+		contract, err := GetContract(address, blockTime)
 		if err != nil {
 			return nil, err
 		}
@@ -187,7 +232,7 @@ func DecodeTransactionInput(input []byte, address string) (*DecodedData, error) 
 	return dec, nil
 }
 
-func DecodeEventData(wlog *web3.Log) (*DecodedData, error) {
+func DecodeEventData(wlog *web3.Log, blockTime int64) (*DecodedData, error) {
 	eventID := wlog.Topics[0].String()
 	var event *abi.Event
 	var ok bool
@@ -203,7 +248,7 @@ func DecodeEventData(wlog *web3.Log) (*DecodedData, error) {
 	}
 	if !ok {
 		// find contract event
-		contract, err := NewContract(wlog.Address.String())
+		contract, err := GetContract(wlog.Address.String(), blockTime)
 		if err != nil {
 			return nil, err
 		}

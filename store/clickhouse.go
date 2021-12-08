@@ -15,8 +15,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/golang/glog"
 	clickhouse "github.com/mailru/go-clickhouse"
 	"github.com/open-dovetail/eth-track/proc"
+	"github.com/pkg/errors"
 	"github.com/umbracle/go-web3"
 )
 
@@ -103,8 +105,69 @@ func (c *ClickHouseConnection) Close() error {
 	return c.connection.Close()
 }
 
-func (c *ClickHouseConnection) Query(sql string) (*sql.Rows, error) {
-	return c.connection.Query(sql)
+func (c *ClickHouseConnection) Query(sql string, args ...interface{}) (*sql.Rows, error) {
+	return c.connection.Query(sql, args...)
+}
+
+func QueryContract(address string) (*proc.Contract, error) {
+	if db == nil {
+		return nil, errors.New("Database connection not defined. Must initialize it by NewClickHouseConnection(dbURL, dbName, params)")
+	}
+
+	rows, err := db.Query(`
+		SELECT
+			Name,
+			Symbol,
+			Decimals,
+			TotalSupply,
+			UpdatedDate,
+			StartEventDate,
+			LastEventDate,
+			ABI
+		FROM contracts
+		WHERE Address = ?`, address[2:])
+
+	if err != nil {
+		return nil, errors.Wrapf(err, "Failed to query contract %s", address)
+	}
+
+	// Gets the first returned row because one result is enough for ReplacingMergeTree
+	defer rows.Close()
+
+	if rows.Next() {
+		contract := &proc.Contract{Address: address}
+
+		var totalSupply float64
+		// clickhouse stores date w/o timezone, and
+		// go-clickhouse dataparser.go parses query result using UTC by default
+		// Note: parser timezone can be overriden in request URL with parameter, e.g. location=UTC,
+		//       which would set time location to time.LoadLocation(loc) - ref go-clickhouse/config.go
+		var updatedTime, startEventTime, lastEventTime time.Time
+
+		if err := rows.Scan(
+			&contract.Name,
+			&contract.Symbol,
+			&contract.Decimals,
+			&totalSupply,
+			&updatedTime,
+			&startEventTime,
+			&lastEventTime,
+			&contract.ABI,
+		); err != nil {
+			return nil, errors.Wrapf(err, "Failed to parse query result for %s", address)
+		}
+		fmt.Println("query returned time in location", updatedTime.Location().String())
+		contract.TotalSupply = floatToBigInt(totalSupply)
+		contract.UpdatedTime = updatedTime.Unix()
+		contract.StartEventTime = startEventTime.Unix()
+		contract.LastEventTime = lastEventTime.Unix()
+		if glog.V(2) {
+			glog.Infoln("Query contract", contract.Address, contract.Symbol, contract.TotalSupply, contract.UpdatedTime)
+			glog.Infoln("contract ABI", contract.ABI)
+		}
+		return contract, nil
+	}
+	return nil, nil
 }
 
 func (c *ClickHouseConnection) startTx() (*ClickHouseTransaction, error) {
@@ -178,7 +241,7 @@ func (t *ClickHouseTransaction) prepareContractStmt() error {
 	return nil
 }
 
-func (t *ClickHouseTransaction) InsertContract(contract *proc.Contract, abi string) error {
+func (t *ClickHouseTransaction) InsertContract(contract *proc.Contract) error {
 	txnLock.Lock()
 	defer txnLock.Unlock()
 
@@ -193,10 +256,10 @@ func (t *ClickHouseTransaction) InsertContract(contract *proc.Contract, abi stri
 		contract.Symbol,
 		contract.Decimals,
 		bigIntToFloat(contract.TotalSupply),
-		clickhouse.Date(time.Unix(contract.UpdatedTime, 0)),
-		clickhouse.Date(time.Unix(contract.StartEventTime, 0)),
-		clickhouse.Date(time.Unix(contract.LastEventTime, 0)),
-		abi,
+		clickhouse.Date(secondsToDateTime(contract.UpdatedTime)),
+		clickhouse.Date(secondsToDateTime(contract.StartEventTime)),
+		clickhouse.Date(secondsToDateTime(contract.LastEventTime)),
+		contract.ABI,
 	)
 	return err
 }
@@ -212,9 +275,10 @@ func (t *ClickHouseTransaction) prepareBlockStmt() error {
 				Difficulty,
 				GasLimit,
 				GasUsed,
+				Status,
 				BlockTime
 			) VALUES (
-				?, ?, ?, ?, ?, ?, ?, ?
+				?, ?, ?, ?, ?, ?, ?, ?, ?
 			)`)
 		if err != nil {
 			return err
@@ -233,15 +297,20 @@ func (t *ClickHouseTransaction) InsertBlock(block *proc.Block) error {
 		return fmt.Errorf("block statement is not prepared for ClickHouse transaction")
 	}
 
+	var status = int8(-1)
+	if block.Status {
+		status = 1
+	}
 	_, err := stmt.Exec(
 		hexToFixedString(block.Hash, 64),
-		block.Number,
+		clickhouse.UInt64(block.Number),
 		hexToFixedString(block.ParentHash.String(), 64),
 		block.Miner,
 		bigIntToFloat(block.Difficulty),
-		block.GasLimit,
-		block.GasUsed,
-		time.Unix(block.BlockTime, 0),
+		clickhouse.UInt64(block.GasLimit),
+		clickhouse.UInt64(block.GasUsed),
+		status,
+		secondsToDateTime(block.BlockTime),
 	)
 	return err
 }
@@ -287,14 +356,14 @@ func (t *ClickHouseTransaction) InsertTransaction(transaction *proc.Transaction)
 	}
 
 	params := paramsToValuers(transaction.Params)
-	var status int8
+	var status = int8(-1)
 	if transaction.Status {
 		status = 1
 	}
 	_, err := stmt.Exec(
 		hexToFixedString(transaction.Hash, 64),
-		transaction.BlockNumber,
-		transaction.TxnIndex,
+		clickhouse.UInt64(transaction.BlockNumber),
+		clickhouse.UInt64(transaction.TxnIndex),
 		status,
 		hexToFixedString(transaction.From, 40),
 		hexToFixedString(transaction.To, 40),
@@ -303,11 +372,11 @@ func (t *ClickHouseTransaction) InsertTransaction(transaction *proc.Transaction)
 		params.Seq,
 		params.ValueString,
 		params.ValueDouble,
-		transaction.GasPrice,
-		transaction.Gas,
+		clickhouse.UInt64(transaction.GasPrice),
+		clickhouse.UInt64(transaction.Gas),
 		bigIntToFloat(transaction.Value),
-		transaction.Nonce,
-		time.Unix(transaction.BlockTime, 0),
+		clickhouse.UInt64(transaction.Nonce),
+		secondsToDateTime(transaction.BlockTime),
 	)
 	return err
 }
@@ -349,15 +418,15 @@ func (t *ClickHouseTransaction) InsertLog(eventlog *proc.EventLog) error {
 	}
 
 	params := paramsToValuers(eventlog.Params)
-	var removed int8
+	var removed = int8(-1)
 	if eventlog.Removed {
 		removed = 1
 	}
 	_, err := stmt.Exec(
-		eventlog.BlockNumber,
-		eventlog.LogIndex,
+		clickhouse.UInt64(eventlog.BlockNumber),
+		clickhouse.UInt64(eventlog.LogIndex),
 		removed,
-		eventlog.TxnIndex,
+		clickhouse.UInt64(eventlog.TxnIndex),
 		hexToFixedString(eventlog.TxnHash, 64),
 		hexToFixedString(eventlog.ContractAddr, 40),
 		eventlog.Event,
@@ -365,9 +434,20 @@ func (t *ClickHouseTransaction) InsertLog(eventlog *proc.EventLog) error {
 		params.Seq,
 		params.ValueString,
 		params.ValueDouble,
-		time.Unix(eventlog.BlockTime, 0),
+		secondsToDateTime(eventlog.BlockTime),
 	)
 	return err
+}
+
+// convert Unix seconds to UTC time
+func secondsToDateTime(t int64) time.Time {
+	return time.Unix(t, 0).UTC()
+}
+
+// zero out time from DateTime, then return Unix seconds
+func timeToDate(t time.Time) int64 {
+	d := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, t.Nanosecond(), t.Location())
+	return d.Unix()
 }
 
 func bigIntToFloat(i *big.Int) float64 {
@@ -375,6 +455,12 @@ func bigIntToFloat(i *big.Int) float64 {
 	f.SetInt(i)
 	v, _ := f.Float64()
 	return v
+}
+
+func floatToBigInt(f float64) *big.Int {
+	bf := big.NewFloat(f)
+	i, _ := bf.Int(nil)
+	return i
 }
 
 func hexToFixedString(h string, s int) string {

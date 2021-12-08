@@ -76,6 +76,7 @@ func (c *EtherscanAPI) FetchABI(address string) (string, error) {
 			if glog.V(2) {
 				glog.Infof("Sleep %d ms", delay)
 			}
+			// fmt.Printf("Sleep %d ms\n", delay)
 			time.Sleep(time.Duration(delay) * time.Millisecond)
 		}
 		c.apiTime = int64(time.Now().UnixNano() / 1000000)

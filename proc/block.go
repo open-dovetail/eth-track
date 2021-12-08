@@ -16,6 +16,7 @@ type Block struct {
 	GasLimit     uint64
 	GasUsed      uint64
 	BlockTime    int64
+	Status       bool // true for confirmed, false if not belong to confirmed chain
 	Transactions []*Transaction
 	EventLogs    []*EventLog
 }
@@ -68,11 +69,10 @@ func DecodeBlock(block *web3.Block) (*Block, error) {
 		GasUsed:      block.GasUsed,
 		BlockTime:    int64(block.Timestamp),
 		Transactions: make([]*Transaction, txLen, txLen),
+		Status:       true,
 	}
 	for i, tx := range block.Transactions {
-		txn := DecodeTransaction(tx)
-		txn.BlockTime = result.BlockTime
-		result.Transactions[i] = txn
+		result.Transactions[i] = DecodeTransaction(tx, result.BlockTime)
 	}
 	err := result.DecodeEvents()
 	return result, err
@@ -86,9 +86,7 @@ func (b *Block) DecodeEvents() error {
 	}
 	b.EventLogs = make([]*EventLog, len(wlogs), len(wlogs))
 	for i, w := range wlogs {
-		evt := DecodeEventLog(w)
-		evt.BlockTime = b.BlockTime
-		b.EventLogs[i] = evt
+		b.EventLogs[i] = DecodeEventLog(w, b.BlockTime)
 	}
 	return nil
 }
