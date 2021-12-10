@@ -4,33 +4,22 @@ import (
 	"encoding/hex"
 
 	"github.com/golang/glog"
+	"github.com/open-dovetail/eth-track/common"
 	web3 "github.com/umbracle/go-web3"
 )
 
-type EventLog struct {
-	BlockNumber  uint64
-	LogIndex     uint64
-	Removed      bool
-	TxnIndex     uint64
-	TxnHash      string
-	ContractAddr string
-	Event        string
-	Params       []*NamedValue
-	BlockTime    int64
-}
-
-func DecodeEventLog(wlog *web3.Log, blockTime int64) *EventLog {
+func DecodeEventLog(wlog *web3.Log, blockTime int64) *common.EventLog {
 	if glog.V(2) {
 		glog.Infoln("Log:", wlog.LogIndex, len(wlog.Topics), wlog.Topics[0].String(), wlog.Address.String(), hex.EncodeToString(wlog.Data))
 	}
-	result := &EventLog{
-		BlockNumber:  wlog.BlockNumber,
-		LogIndex:     wlog.LogIndex,
-		Removed:      wlog.Removed,
-		TxnIndex:     wlog.TransactionIndex,
-		TxnHash:      wlog.TransactionHash.String(),
-		ContractAddr: wlog.Address.String(),
-		BlockTime:    blockTime,
+	result := &common.EventLog{
+		BlockNumber: wlog.BlockNumber,
+		LogIndex:    wlog.LogIndex,
+		Removed:     wlog.Removed,
+		TxnIndex:    wlog.TransactionIndex,
+		TxnHash:     wlog.TransactionHash.String(),
+		Address:     wlog.Address.String(),
+		BlockTime:   blockTime,
 	}
 	// decode only if event topics exist
 	if len(wlog.Topics) < 1 {

@@ -5,8 +5,6 @@ import (
 	"database/sql/driver"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
-	"log"
 	"math/big"
 	"net/url"
 	"reflect"
@@ -17,7 +15,7 @@ import (
 
 	"github.com/golang/glog"
 	clickhouse "github.com/mailru/go-clickhouse"
-	"github.com/open-dovetail/eth-track/proc"
+	"github.com/open-dovetail/eth-track/common"
 	"github.com/pkg/errors"
 	"github.com/umbracle/go-web3"
 )
@@ -73,6 +71,15 @@ func GetDBConnection() *ClickHouseConnection {
 	return db
 }
 
+func MustGetDBTx() *ClickHouseTransaction {
+	if txn != nil {
+		return txn
+	}
+
+	tx, _ := GetDBTx()
+	return tx
+}
+
 func GetDBTx() (*ClickHouseTransaction, error) {
 	txnLock.Lock()
 	defer txnLock.Unlock()
@@ -109,9 +116,9 @@ func (c *ClickHouseConnection) Query(sql string, args ...interface{}) (*sql.Rows
 	return c.connection.Query(sql, args...)
 }
 
-func QueryContract(address string) (*proc.Contract, error) {
+func QueryContract(address string) (*common.Contract, error) {
 	if db == nil {
-		return nil, errors.New("Database connection not defined. Must initialize it by NewClickHouseConnection(dbURL, dbName, params)")
+		return nil, errors.New("Database connection is not initialized")
 	}
 
 	rows, err := db.Query(`
@@ -135,7 +142,7 @@ func QueryContract(address string) (*proc.Contract, error) {
 	defer rows.Close()
 
 	if rows.Next() {
-		contract := &proc.Contract{Address: address}
+		contract := &common.Contract{Address: address}
 
 		var totalSupply float64
 		// clickhouse stores date w/o timezone, and
@@ -156,7 +163,7 @@ func QueryContract(address string) (*proc.Contract, error) {
 		); err != nil {
 			return nil, errors.Wrapf(err, "Failed to parse query result for %s", address)
 		}
-		fmt.Println("query returned time in location", updatedTime.Location().String())
+
 		contract.TotalSupply = floatToBigInt(totalSupply)
 		contract.UpdatedTime = updatedTime.Unix()
 		contract.StartEventTime = startEventTime.Unix()
@@ -172,7 +179,7 @@ func QueryContract(address string) (*proc.Contract, error) {
 
 func (c *ClickHouseConnection) startTx() (*ClickHouseTransaction, error) {
 	if txn != nil {
-		return txn, fmt.Errorf("Previous transaction has not been committed or rolled back")
+		return txn, errors.New("Previous transaction has not been committed or rolled back")
 	}
 
 	tx, err := c.connection.Begin()
@@ -241,13 +248,13 @@ func (t *ClickHouseTransaction) prepareContractStmt() error {
 	return nil
 }
 
-func (t *ClickHouseTransaction) InsertContract(contract *proc.Contract) error {
+func (t *ClickHouseTransaction) InsertContract(contract *common.Contract) error {
 	txnLock.Lock()
 	defer txnLock.Unlock()
 
 	stmt, ok := t.stmts["contract"]
 	if !ok {
-		return fmt.Errorf("Contract statement is not prepared for ClickHouse transaction")
+		return errors.New("Contract statement is not prepared for ClickHouse transaction")
 	}
 
 	_, err := stmt.Exec(
@@ -288,13 +295,13 @@ func (t *ClickHouseTransaction) prepareBlockStmt() error {
 	return nil
 }
 
-func (t *ClickHouseTransaction) InsertBlock(block *proc.Block) error {
+func (t *ClickHouseTransaction) InsertBlock(block *common.Block) error {
 	txnLock.Lock()
 	defer txnLock.Unlock()
 
 	stmt, ok := t.stmts["block"]
 	if !ok {
-		return fmt.Errorf("block statement is not prepared for ClickHouse transaction")
+		return errors.New("block statement is not prepared for ClickHouse transaction")
 	}
 
 	var status = int8(-1)
@@ -305,7 +312,7 @@ func (t *ClickHouseTransaction) InsertBlock(block *proc.Block) error {
 		hexToFixedString(block.Hash, 64),
 		clickhouse.UInt64(block.Number),
 		hexToFixedString(block.ParentHash.String(), 64),
-		block.Miner,
+		hexToFixedString(block.Miner, 40),
 		bigIntToFloat(block.Difficulty),
 		clickhouse.UInt64(block.GasLimit),
 		clickhouse.UInt64(block.GasUsed),
@@ -346,13 +353,13 @@ func (t *ClickHouseTransaction) prepareTransactionStmt() error {
 	return nil
 }
 
-func (t *ClickHouseTransaction) InsertTransaction(transaction *proc.Transaction) error {
+func (t *ClickHouseTransaction) InsertTransaction(transaction *common.Transaction) error {
 	txnLock.Lock()
 	defer txnLock.Unlock()
 
 	stmt, ok := t.stmts["transaction"]
 	if !ok {
-		return fmt.Errorf("transaction statement is not prepared for ClickHouse transaction")
+		return errors.New("transaction statement is not prepared for ClickHouse transaction")
 	}
 
 	params := paramsToValuers(transaction.Params)
@@ -390,7 +397,7 @@ func (t *ClickHouseTransaction) prepareLogStmt() error {
 				Removed,
 				TxnIndex,
 				TxnHash,
-				ContractAddr,
+				Address,
 				Event,
 				Params.Name,
 				Params.Seq,
@@ -408,13 +415,13 @@ func (t *ClickHouseTransaction) prepareLogStmt() error {
 	return nil
 }
 
-func (t *ClickHouseTransaction) InsertLog(eventlog *proc.EventLog) error {
+func (t *ClickHouseTransaction) InsertLog(eventlog *common.EventLog) error {
 	txnLock.Lock()
 	defer txnLock.Unlock()
 
 	stmt, ok := t.stmts["log"]
 	if !ok {
-		return fmt.Errorf("eventlog statement is not prepared for ClickHouse transaction")
+		return errors.New("eventlog statement is not prepared for ClickHouse transaction")
 	}
 
 	params := paramsToValuers(eventlog.Params)
@@ -428,7 +435,7 @@ func (t *ClickHouseTransaction) InsertLog(eventlog *proc.EventLog) error {
 		removed,
 		clickhouse.UInt64(eventlog.TxnIndex),
 		hexToFixedString(eventlog.TxnHash, 64),
-		hexToFixedString(eventlog.ContractAddr, 40),
+		hexToFixedString(eventlog.Address, 40),
 		eventlog.Event,
 		params.Name,
 		params.Seq,
@@ -446,11 +453,14 @@ func secondsToDateTime(t int64) time.Time {
 
 // zero out time from DateTime, then return Unix seconds
 func timeToDate(t time.Time) int64 {
-	d := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, t.Nanosecond(), t.Location())
+	d := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
 	return d.Unix()
 }
 
 func bigIntToFloat(i *big.Int) float64 {
+	if i == nil {
+		return 0
+	}
 	f := new(big.Float)
 	f.SetInt(i)
 	v, _ := f.Float64()
@@ -469,20 +479,20 @@ func hexToFixedString(h string, s int) string {
 		result = h[2:]
 	}
 	if len(result) > s {
-		log.Printf("WARN - hex string is more than %d characters long: %s", s, result)
+		glog.Warningf("hex string is more than %d characters long: %s", s, result)
 		return result[:s]
 	}
 	return result
 }
 
 // convert nested params into array for clickhouse insert
-func paramsToValuers(params []*proc.NamedValue) *ParamsValuer {
+func paramsToValuers(params []*common.NamedValue) *ParamsValuer {
 	if params == nil || len(params) == 0 {
 		return &ParamsValuer{
-			Name:        clickhouse.Array(nil),
-			Seq:         clickhouse.Array(nil),
-			ValueString: clickhouse.Array(nil),
-			ValueDouble: clickhouse.Array(nil),
+			Name:        nil,
+			Seq:         nil,
+			ValueString: nil,
+			ValueDouble: nil,
 		}
 	}
 	names := make([]string, len(params))
@@ -500,8 +510,16 @@ func paramsToValuers(params []*proc.NamedValue) *ParamsValuer {
 		}
 		if p, err := json.Marshal(value); err == nil {
 			sp := string(p)
-			fmt.Printf("Input %s %s %T %s\n", v.Name, v.Kind.String(), v.Value, sp)
-			if matched, _ := regexp.MatchString(`^".*"$`, sp); matched {
+			if glog.V(2) {
+				glog.Infof("Input %s %s %T %s", v.Name, v.Kind.String(), v.Value, sp)
+			}
+			if sp == "true" {
+				doubleValues[i] = 1
+			} else if sp == "false" {
+				doubleValues[i] = 0
+			} else if sp == "null" {
+				stringValues[i] = ""
+			} else if matched, _ := regexp.MatchString(`^".*"$`, sp); matched {
 				stringValues[i] = sp[1 : len(sp)-1]
 			} else if matched, _ := regexp.MatchString(`^\{.*\}$`, sp); matched {
 				stringValues[i] = sp
@@ -513,7 +531,7 @@ func paramsToValuers(params []*proc.NamedValue) *ParamsValuer {
 					v, _ := f.Float64()
 					doubleValues[i] = v
 				} else {
-					log.Printf("WARN - failed to convert digits to float64: %s", sp)
+					glog.Warningf("Failed to convert digits to float64: %s", sp)
 					stringValues[i] = sp
 				}
 			}

@@ -1,31 +1,18 @@
 package proc
 
 import (
-	"math/big"
+	"encoding/hex"
 
 	"github.com/golang/glog"
+	"github.com/open-dovetail/eth-track/common"
 	web3 "github.com/umbracle/go-web3"
 )
 
-type Transaction struct {
-	Hash        string
-	BlockNumber uint64
-	TxnIndex    uint64
-	Status      bool
-	From        string
-	To          string
-	Method      string
-	Params      []*NamedValue
-	GasPrice    uint64
-	Gas         uint64
-	Value       *big.Int
-	Nonce       uint64
-	BlockTime   int64
-}
-
-func DecodeTransaction(tx *web3.Transaction, blockTime int64) *Transaction {
-	// fmt.Println("Transaction:", tx.TxnIndex, tx.From.String(), tx.To.String(), tx.Value, tx.Hash.String(), hex.EncodeToString(tx.Input))
-	result := &Transaction{
+func DecodeTransaction(tx *web3.Transaction, blockTime int64) *common.Transaction {
+	if glog.V(2) {
+		glog.Infoln("Decode transaction:", tx.TxnIndex, tx.From.String(), tx.To.String(), tx.Value, tx.Hash.String(), hex.EncodeToString(tx.Input))
+	}
+	result := &common.Transaction{
 		Hash:        tx.Hash.String(),
 		BlockNumber: tx.BlockNumber,
 		TxnIndex:    tx.TxnIndex,

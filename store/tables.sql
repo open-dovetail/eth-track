@@ -21,7 +21,7 @@ CREATE TABLE ethdb.blocks
     `Hash` FixedString(64),
     `Number` UInt64,
     `ParentHash` FixedString(64),
-    `Miner` String,
+    `Miner` FixedString(40),
     `Difficulty` Float64,
     `GasLimit` UInt64,
     `GasUsed` UInt64,

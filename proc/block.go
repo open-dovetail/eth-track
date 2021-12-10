@@ -1,46 +1,33 @@
 package proc
 
 import (
-	"math/big"
-
 	"github.com/golang/glog"
+	"github.com/open-dovetail/eth-track/common"
+	"github.com/open-dovetail/eth-track/store"
+	"github.com/pkg/errors"
 	web3 "github.com/umbracle/go-web3"
 )
 
-type Block struct {
-	Hash         string
-	Number       uint64
-	ParentHash   web3.Hash
-	Miner        string
-	Difficulty   *big.Int
-	GasLimit     uint64
-	GasUsed      uint64
-	BlockTime    int64
-	Status       bool // true for confirmed, false if not belong to confirmed chain
-	Transactions []*Transaction
-	EventLogs    []*EventLog
-}
-
-// return block number at the delayed height from the current block
-func LastConfirmedBlock(blockDelay int) (uint64, error) {
+// return block at the delayed height from the current block
+func LastConfirmedBlock(blockDelay int) (*web3.Block, error) {
 	client := GetEthereumClient()
 	lastBlock, err := client.Eth().BlockNumber()
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	block, err := client.Eth().GetBlockByNumber(web3.BlockNumber(lastBlock), true)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	for i := 0; i < blockDelay; i++ {
 		if block, err = client.Eth().GetBlockByHash(block.ParentHash, true); err != nil {
-			return 0, err
+			return nil, err
 		}
 	}
-	return block.Number, nil
+	return block, nil
 }
 
-func DecodeBlockByNumber(blockNumber uint64) (*Block, error) {
+func DecodeBlockByNumber(blockNumber uint64) (*common.Block, error) {
 	block, err := GetEthereumClient().Eth().GetBlockByNumber(web3.BlockNumber(blockNumber), true)
 	if err != nil {
 		return nil, err
@@ -48,7 +35,7 @@ func DecodeBlockByNumber(blockNumber uint64) (*Block, error) {
 	return DecodeBlock(block)
 }
 
-func DecodeBlockByHash(blockHash web3.Hash) (*Block, error) {
+func DecodeBlockByHash(blockHash web3.Hash) (*common.Block, error) {
 	block, err := GetEthereumClient().Eth().GetBlockByHash(blockHash, true)
 	if err != nil {
 		return nil, err
@@ -56,37 +43,69 @@ func DecodeBlockByHash(blockHash web3.Hash) (*Block, error) {
 	return DecodeBlock(block)
 }
 
-func DecodeBlock(block *web3.Block) (*Block, error) {
-	glog.Infof("Block %d: %s @ %d", block.Number, block.Hash.String(), block.Timestamp)
-	txLen := len(block.Transactions)
-	result := &Block{
-		Hash:         block.Hash.String(),
-		Number:       block.Number,
-		ParentHash:   block.Hash,
-		Miner:        block.Miner.String(),
-		Difficulty:   block.Difficulty,
-		GasLimit:     block.GasLimit,
-		GasUsed:      block.GasUsed,
-		BlockTime:    int64(block.Timestamp),
-		Transactions: make([]*Transaction, txLen, txLen),
-		Status:       true,
+func DecodeBlock(block *web3.Block) (*common.Block, error) {
+	glog.Infof("Block %d: %s @ %d transactions=%d", block.Number, block.Hash.String(), block.Timestamp, len(block.Transactions))
+	result := &common.Block{
+		Hash:       block.Hash.String(),
+		Number:     block.Number,
+		ParentHash: block.ParentHash,
+		Miner:      block.Miner.String(),
+		Difficulty: block.Difficulty,
+		GasLimit:   block.GasLimit,
+		GasUsed:    block.GasUsed,
+		BlockTime:  int64(block.Timestamp),
+		Status:     true,
 	}
-	for i, tx := range block.Transactions {
-		result.Transactions[i] = DecodeTransaction(tx, result.BlockTime)
+	if err := insertData(result); err != nil {
+		glog.Warningf("Failed to insert block %d: %+v", block.Number, err)
 	}
-	err := result.DecodeEvents()
+
+	for _, tx := range block.Transactions {
+		trans := DecodeTransaction(tx, result.BlockTime)
+		if err := insertData(trans); err != nil {
+			glog.Warningf("Failed to insert transaction %s: %+v", trans.Hash, err)
+		}
+	}
+	err := DecodeEvents(result)
 	return result, err
 }
 
-func (b *Block) DecodeEvents() error {
+func insertData(data interface{}) error {
+	if store.GetDBConnection() == nil {
+		return errors.New("Database connection is not initialized")
+	}
+	switch v := data.(type) {
+	case *common.Block:
+		return store.MustGetDBTx().InsertBlock(v)
+	case *common.Transaction:
+		return store.MustGetDBTx().InsertTransaction(v)
+	case *common.EventLog:
+		return store.MustGetDBTx().InsertLog(v)
+	case *common.Contract:
+		return store.MustGetDBTx().InsertContract(v)
+	}
+	return nil
+}
+
+func DecodeEvents(b *common.Block) error {
 	// Note: client.Eth().GetLogs(&logFilter) does not work with `BlockHash` filter, so use base RPC call here
 	var wlogs []*web3.Log
 	if err := GetEthereumClient().Call("eth_getLogs", &wlogs, map[string]string{"BlockHash": b.Hash}); err != nil {
 		return err
 	}
-	b.EventLogs = make([]*EventLog, len(wlogs), len(wlogs))
-	for i, w := range wlogs {
-		b.EventLogs[i] = DecodeEventLog(w, b.BlockTime)
+
+	// It is equivalent to use filter From=To=b.Number as follows
+	// filter := &web3.LogFilter{}
+	// filter.SetFromUint64(b.Number)
+	// filter.SetToUint64(b.Number)
+	// wlogs, err := GetEthereumClient().Eth().GetLogs(filter)
+
+	for _, w := range wlogs {
+		evt := DecodeEventLog(w, b.BlockTime)
+		if err := insertData(evt); err != nil {
+			glog.Warningf("Failed to insert eventlog %s %d: %s", evt.TxnHash, evt.LogIndex, err.Error())
+		}
 	}
+	glog.Infof("Block %d: %s @ %d events=%d", b.Number, b.Hash, b.BlockTime, len(wlogs))
 	return nil
 }

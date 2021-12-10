@@ -3,11 +3,13 @@ package main
 import (
 	"flag"
 	"os"
+	"time"
 
 	"github.com/golang/glog"
 
 	"github.com/pkg/errors"
 
+	"github.com/open-dovetail/eth-track/common"
 	"github.com/open-dovetail/eth-track/proc"
 	"github.com/open-dovetail/eth-track/store"
 )
@@ -17,6 +19,7 @@ type Config struct {
 	apiKey         string // etherscan API key
 	etherscanDelay int    // delay of consecutive etherscan API invocation in ms
 	blockDelay     int    // blockchain height delay for last confirmed block
+	blockBatchSize int    // number of blocks to process per db commit
 	dbURL          string // clickhouse URL
 	dbName         string // clickhouse database name
 	dbUser         string // clickhouse user name
@@ -31,6 +34,7 @@ func init() {
 	flag.StringVar(&config.apiKey, "apiKey", "", "Etherscan API key")
 	flag.IntVar(&config.etherscanDelay, "etherscanDelay", 350, "delay in millis between etherscan API calls")
 	flag.IntVar(&config.blockDelay, "blockDelay", 12, "blockchain height delay for last confirmed block")
+	flag.IntVar(&config.blockBatchSize, "blockBatchSize", 10, "number of blocks to process per db commit")
 	flag.StringVar(&config.dbURL, "dbURL", "http://127.0.0.1:8123", "Etherscan API key")
 	flag.StringVar(&config.dbName, "dbName", "ethdb", "Etherscan API key")
 	flag.StringVar(&config.dbUser, "dbUser", "default", "Etherscan API key")
@@ -133,22 +137,51 @@ func main() {
 		glog.Fatalf("Failed initialization: %+v", err)
 	}
 
-	testDecode()
+	startTime := time.Now().Unix()
+	var lastBlock *common.Block
+	var err error
+	for i := 0; i < 10; i++ {
+		loopStart := time.Now().Unix()
+		lastBlock, err = decodeBlocks(lastBlock, config.blockBatchSize)
+		if err != nil {
+			glog.Fatalf("Failed block batch %+v", err)
+		}
+		loopEnd := time.Now().Unix()
+		glog.Infof("[%d] Block %d - Loop elapsed: %ds; Total elapsed: %ds", i, lastBlock.Number, (loopEnd - loopStart), (loopEnd - startTime))
+	}
+
+	if lastBlock != nil {
+		glog.Infof("Last block %d", lastBlock.Number)
+	}
+
+	if err := store.GetDBConnection().Close(); err != nil {
+		glog.Errorf("Failed to close db connection: %4", err.Error())
+	}
 }
 
-func testDecode() {
-
-	// get last confirmed block, assume confirmed at 12 height before last known block
-	lastBlock, err := proc.LastConfirmedBlock(config.blockDelay)
-	if err != nil {
-		glog.Fatalf("Failed to retrieve last confirmed block: %+v", err)
+func decodeBlocks(startBlock *common.Block, batchSize int) (lastBlock *common.Block, err error) {
+	if startBlock == nil {
+		block, err := proc.LastConfirmedBlock(config.blockDelay)
+		if err != nil {
+			return nil, errors.Wrapf(err, "Failed to retrieve last confirmed block")
+		}
+		// decode the last confirmed block
+		if lastBlock, err = proc.DecodeBlock(block); err != nil {
+			return lastBlock, err
+		}
+	} else {
+		lastBlock = startBlock
 	}
-	glog.Infof("Last block number: %d", lastBlock)
 
-	// lastBlock = 13742419
-	block, err := proc.DecodeBlockByNumber(lastBlock)
-	if err != nil {
-		glog.Fatalf("Failed to decode block %d: %+v", lastBlock, err)
+	// decode batch of parent blocks
+	for i := 0; i < batchSize; i++ {
+		if lastBlock, err = proc.DecodeBlockByHash(lastBlock.ParentHash); err != nil {
+			return lastBlock, errors.Wrapf(err, "Failed to retrieve parent block")
+		}
 	}
-	glog.Infof("Block %d: %s @ %d; Transactions: %d; Events: %d", block.Number, block.Hash, block.BlockTime, len(block.Transactions), len(block.EventLogs))
+
+	if err := store.MustGetDBTx().CommitTx(); err != nil {
+		glog.Errorf("Failed to commit db transaction: %s", err.Error())
+	}
+	return
 }
