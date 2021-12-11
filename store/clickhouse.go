@@ -116,6 +116,82 @@ func (c *ClickHouseConnection) Query(sql string, args ...interface{}) (*sql.Rows
 	return c.connection.Query(sql, args...)
 }
 
+// return number of blocks in database
+func CountBlocks() (int, error) {
+	if db == nil {
+		return 0, errors.New("Database connection is not initialized")
+	}
+
+	rows, err := db.Query(`SELECT count(*) from blocks`)
+	if err != nil {
+		return 0, errors.Wrapf(err, "Failed to count blocks")
+	}
+	defer rows.Close()
+
+	if rows.Next() {
+		var count int
+
+		if err := rows.Scan(&count); err != nil {
+			return 0, errors.Wrapf(err, "Failed to parse query result for block count")
+		}
+		return count, nil
+	}
+	return 0, nil
+}
+
+// query block of time 'latest', 'earlest', or specific time, e.g., '2021-12-10 16:13:33'
+func QueryBlock(blockTime string) (*common.Block, error) {
+	count, err := CountBlocks()
+	if err != nil {
+		return nil, err
+	}
+
+	if count == 0 {
+		// database does not have any blocks
+		return nil, nil
+	}
+
+	sql := `SELECT Number, Hash, BlockTime FROM blocks WHERE BlockTime = `
+	if blockTime == "latest" {
+		sql += "(select max(BlockTime) from blocks)"
+	} else if blockTime == "earliest" {
+		sql += "(select min(BlockTime) from blocks)"
+	} else {
+		sql += "'" + blockTime + "'"
+	}
+	rows, err := db.Query(sql)
+
+	if err != nil {
+		return nil, errors.Wrapf(err, "Failed to query block at %s", blockTime)
+	}
+
+	// Gets the first returned row because it is expected to return 1 row
+	defer rows.Close()
+
+	if rows.Next() {
+		block := &common.Block{}
+
+		// clickhouse stores date w/o timezone, and
+		// go-clickhouse dataparser.go parses query result using UTC by default
+		var blockTime time.Time
+
+		if err := rows.Scan(
+			&block.Number,
+			&block.Hash,
+			&blockTime,
+		); err != nil {
+			return nil, errors.Wrapf(err, "Failed to parse query result for block at %s", blockTime)
+		}
+		block.Hash = "0x" + block.Hash
+		block.BlockTime = blockTime.Unix()
+		if glog.V(2) {
+			glog.Infoln("Query block", block.Number, block.Hash, block.BlockTime)
+		}
+		return block, nil
+	}
+	return nil, nil
+}
+
 func QueryContract(address string) (*common.Contract, error) {
 	if db == nil {
 		return nil, errors.New("Database connection is not initialized")
@@ -130,6 +206,7 @@ func QueryContract(address string) (*common.Contract, error) {
 			UpdatedDate,
 			StartEventDate,
 			LastEventDate,
+			LastErrorTime,
 			ABI
 		FROM contracts
 		WHERE Address = ?`, address[2:])
@@ -149,7 +226,7 @@ func QueryContract(address string) (*common.Contract, error) {
 		// go-clickhouse dataparser.go parses query result using UTC by default
 		// Note: parser timezone can be overriden in request URL with parameter, e.g. location=UTC,
 		//       which would set time location to time.LoadLocation(loc) - ref go-clickhouse/config.go
-		var updatedTime, startEventTime, lastEventTime time.Time
+		var updatedTime, startEventTime, lastEventTime, lastErrorTime time.Time
 
 		if err := rows.Scan(
 			&contract.Name,
@@ -159,6 +236,7 @@ func QueryContract(address string) (*common.Contract, error) {
 			&updatedTime,
 			&startEventTime,
 			&lastEventTime,
+			&lastErrorTime,
 			&contract.ABI,
 		); err != nil {
 			return nil, errors.Wrapf(err, "Failed to parse query result for %s", address)
@@ -168,6 +246,7 @@ func QueryContract(address string) (*common.Contract, error) {
 		contract.UpdatedTime = updatedTime.Unix()
 		contract.StartEventTime = startEventTime.Unix()
 		contract.LastEventTime = lastEventTime.Unix()
+		contract.LastErrorTime = lastErrorTime.Unix()
 		if glog.V(2) {
 			glog.Infoln("Query contract", contract.Address, contract.Symbol, contract.TotalSupply, contract.UpdatedTime)
 			glog.Infoln("contract ABI", contract.ABI)
@@ -236,9 +315,10 @@ func (t *ClickHouseTransaction) prepareContractStmt() error {
 				UpdatedDate,
 				StartEventDate,
 				LastEventDate,
+				LastErrorTime,
 				ABI
 			) VALUES (
-				?, ?, ?, ?, ?, ?, ?, ?, ?
+				?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 			)`)
 		if err != nil {
 			return err
@@ -266,6 +346,7 @@ func (t *ClickHouseTransaction) InsertContract(contract *common.Contract) error 
 		clickhouse.Date(secondsToDateTime(contract.UpdatedTime)),
 		clickhouse.Date(secondsToDateTime(contract.StartEventTime)),
 		clickhouse.Date(secondsToDateTime(contract.LastEventTime)),
+		secondsToDateTime(contract.LastErrorTime),
 		contract.ABI,
 	)
 	return err

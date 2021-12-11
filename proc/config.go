@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -93,16 +94,29 @@ func (c *EtherscanAPI) FetchABI(address string) (string, error) {
 // Note: web3.etherscan.Query does not consistently return on consecutive calls, so use my own HTTP calls to etherscan
 func httpGet(url string, timeout int) (interface{}, error) {
 	if timeout <= 0 {
-		// default time out to 5 second
-		timeout = 15
+		// default time out to 10 second
+		timeout = 5
 	}
-	client := http.Client{
-		Timeout: time.Duration(timeout * int(time.Second)),
+
+	// We have to setup the transport timeout, otherwise, retry would not work after connection failure
+	var netTransport = &http.Transport{
+		Dial: (&net.Dialer{
+			Timeout: time.Duration(timeout) * time.Second,
+		}).Dial,
+		TLSHandshakeTimeout: time.Duration(timeout) * time.Second,
+	}
+	client := &http.Client{
+		Timeout:   time.Duration(timeout+3) * time.Second,
+		Transport: netTransport,
 	}
 	request, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
+
+	// ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	// defer cancel()
+	// request = request.WithContext(ctx)
 	request.Header.Set("Content-Type", "application/json")
 
 	response, err := client.Do(request)

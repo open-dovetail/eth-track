@@ -27,6 +27,19 @@ func LastConfirmedBlock(blockDelay int) (*web3.Block, error) {
 	return block, nil
 }
 
+func GetBlockByNumber(blockNumber uint64) (*common.Block, error) {
+	block, err := GetEthereumClient().Eth().GetBlockByNumber(web3.BlockNumber(blockNumber), true)
+	if err != nil {
+		return nil, err
+	}
+	return &common.Block{
+		Hash:       block.Hash.String(),
+		Number:     block.Number,
+		ParentHash: block.ParentHash,
+		BlockTime:  int64(block.Timestamp),
+	}, nil
+}
+
 func DecodeBlockByNumber(blockNumber uint64) (*common.Block, error) {
 	block, err := GetEthereumClient().Eth().GetBlockByNumber(web3.BlockNumber(blockNumber), true)
 	if err != nil {

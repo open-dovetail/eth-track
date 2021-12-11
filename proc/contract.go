@@ -54,28 +54,32 @@ func GetContract(address string, blockTime int64) (*common.Contract, error) {
 			glog.Infof("Found cached contract ABI for address %s Symbol %s methods=%d events=%d", address, contract.Symbol, len(contract.Methods), len(contract.Events))
 		}
 		if len(contract.ABI) == 0 {
+			setContractErrorTime(contract, blockTime)
 			return nil, errors.Errorf("No ABI in cached contract %s", address)
 		}
-		err := updateContractCache(contract, blockTime)
-		return contract, err
+		setContractEventTime(contract, blockTime)
+		return contract, nil
 	}
 
 	// fetch contract from db
 	if contract, err := store.QueryContract(address); contract != nil && err == nil {
 		contractCache[address] = contract
 		if err := ParseABI(contract); err != nil {
+			setContractErrorTime(contract, blockTime)
 			return nil, errors.Wrapf(err, "Query returned")
 		}
-		err := updateContractCache(contract, blockTime)
-		glog.Infof("Query returned contract for address %s Symbol %s methods=%d events=%d", address, contract.Symbol, len(contract.Methods), len(contract.Events))
-		return contract, err
+		setContractEventTime(contract, blockTime)
+		if glog.V(1) {
+			glog.Infof("Query returned contract for address %s Symbol %s methods=%d events=%d", address, contract.Symbol, len(contract.Methods), len(contract.Events))
+		}
+		return contract, nil
 	}
 
 	// create new contract
 	return NewContract(address, blockTime)
 }
 
-func updateContractCache(contract *common.Contract, blockTime int64) error {
+func setContractEventTime(contract *common.Contract, blockTime int64) {
 	updated := false
 	eventTime := roundToUTCDate(blockTime)
 	if eventTime > contract.LastEventTime {
@@ -88,10 +92,25 @@ func updateContractCache(contract *common.Contract, blockTime int64) error {
 	}
 	if updated {
 		if err := insertData(contract); err != nil {
-			glog.Warningf("Failed to insert contract %s: %s", contract.Address, err.Error())
+			glog.Warningf("Failed to update contract event time %s: %s", contract.Address, err.Error())
 		}
 	}
-	return nil
+}
+
+func setContractErrorTime(contract *common.Contract, blockTime int64) {
+	if blockTime > contract.LastErrorTime {
+		contract.LastErrorTime = blockTime
+		eventTime := roundToUTCDate(blockTime)
+		if eventTime > contract.LastEventTime {
+			contract.LastEventTime = eventTime
+		}
+		if eventTime < contract.StartEventTime {
+			contract.StartEventTime = eventTime
+		}
+		if err := insertData(contract); err != nil {
+			glog.Warningf("Failed to update contract error time %s: %s", contract.Address, err.Error())
+		}
+	}
 }
 
 func NewContract(address string, blockTime int64) (*common.Contract, error) {
@@ -110,11 +129,18 @@ func NewContract(address string, blockTime int64) (*common.Contract, error) {
 		LastEventTime:  eventTime,
 	}
 
-	// Fetch ABI from etherscan
-	if data, err := api.FetchABI(address); err == nil {
-		contract.ABI = data
-	} else {
-		// Etherscan connection down, so quit immediately
+	// Fetch ABI from etherscan - retry 3 times on etherscan failure
+	for retry := 1; retry <= 3; retry++ {
+		if data, err := api.FetchABI(address); err == nil {
+			contract.ABI = data
+			break
+		} else {
+			// Etherscan connection down, wait and retry
+			glog.Warningf("Etherscan API failed %d times for address %s: %+v", retry, address, err)
+			time.Sleep(10 * time.Second)
+		}
+	}
+	if len(contract.ABI) == 0 {
 		glog.Fatalf("Etherscan API failed to return ABI for address %s", address)
 	}
 
@@ -122,20 +148,19 @@ func NewContract(address string, blockTime int64) (*common.Contract, error) {
 		// cache contract w/o ABI so won't try again
 		contract.ABI = ""
 		contractCache[address] = contract
-		if err := insertData(contract); err != nil {
-			glog.Warningf("Failed to insert contract %s: %s", address, err.Error())
-		}
+		setContractErrorTime(contract, blockTime)
 		return nil, errors.Wrapf(err, "Invalid ABI for address %s", address)
 	}
 
 	updateERC20Properties(contract)
-
 	contractCache[address] = contract
 	if err := insertData(contract); err != nil {
 		glog.Warningf("Failed to insert contract %s: %s", address, err.Error())
 	}
 
-	glog.Infof("Created new contract %s Symbol %s methods=%d events=%d", address, contract.Symbol, len(contract.Methods), len(contract.Events))
+	if glog.V(1) {
+		glog.Infof("Created new contract %s Symbol %s methods=%d events=%d", address, contract.Symbol, len(contract.Methods), len(contract.Events))
+	}
 	return contract, nil
 }
 
@@ -226,6 +251,7 @@ func DecodeTransactionInput(input []byte, address string, blockTime int64) (*Dec
 			return nil, err
 		}
 		if method, ok = contract.Methods[methodID]; !ok {
+			setContractErrorTime(contract, blockTime)
 			return nil, errors.Errorf("Unknown method %s 0x%s", address, methodID)
 		}
 	}
@@ -274,9 +300,11 @@ func DecodeEventData(wlog *web3.Log, blockTime int64) (*DecodedData, error) {
 			return nil, err
 		}
 		if event, ok = contract.Events[eventID]; !ok {
+			setContractErrorTime(contract, blockTime)
 			return nil, errors.Errorf("Unknown event %s %s", wlog.Address.String(), eventID)
 		}
 		if data, err = event.ParseLog(wlog); err != nil {
+			setContractErrorTime(contract, blockTime)
 			return nil, errors.Wrapf(err, "Error parsing log %s", wlog.Address.String())
 		}
 	}

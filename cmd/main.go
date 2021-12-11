@@ -24,6 +24,8 @@ type Config struct {
 	dbName         string // clickhouse database name
 	dbUser         string // clickhouse user name
 	dbPassword     string // clickhouse user password
+	startBlock     int64  // latest block number to process
+	endBlock       int64  // earliest block number to process
 }
 
 var config = &Config{}
@@ -34,11 +36,13 @@ func init() {
 	flag.StringVar(&config.apiKey, "apiKey", "", "Etherscan API key")
 	flag.IntVar(&config.etherscanDelay, "etherscanDelay", 350, "delay in millis between etherscan API calls")
 	flag.IntVar(&config.blockDelay, "blockDelay", 12, "blockchain height delay for last confirmed block")
-	flag.IntVar(&config.blockBatchSize, "blockBatchSize", 10, "number of blocks to process per db commit")
+	flag.IntVar(&config.blockBatchSize, "blockBatchSize", 40, "number of blocks to process per db commit")
 	flag.StringVar(&config.dbURL, "dbURL", "http://127.0.0.1:8123", "Etherscan API key")
 	flag.StringVar(&config.dbName, "dbName", "ethdb", "Etherscan API key")
 	flag.StringVar(&config.dbUser, "dbUser", "default", "Etherscan API key")
 	flag.StringVar(&config.dbPassword, "dbPassword", "clickhouse", "Etherscan API key")
+	flag.Int64Var(&config.startBlock, "startBlock", 0, "latest block number to process. 0=latest block on chain; -1=earliest block in database.")
+	flag.Int64Var(&config.endBlock, "endBlock", 0, "earliest block number to process. 0=latest block in database; -1=no limit")
 }
 
 // check env variables, which overrides the commandline input
@@ -138,16 +142,49 @@ func main() {
 	}
 
 	startTime := time.Now().Unix()
-	var lastBlock *common.Block
+	var lastBlock, endBlock *common.Block
 	var err error
-	for i := 0; i < 10; i++ {
+	if config.endBlock > 0 {
+		endBlock, err = proc.GetBlockByNumber(uint64(config.endBlock))
+	} else if config.endBlock == 0 {
+		endBlock, err = store.QueryBlock("latest")
+	}
+	if err != nil {
+		glog.Fatalf("Failed initialize end block %d: %+v", config.endBlock, err)
+	}
+
+	if config.startBlock > 0 {
+		lastBlock, err = proc.GetBlockByNumber(uint64(config.startBlock))
+	} else if config.startBlock < 0 {
+		lastBlock, err = store.QueryBlock("earliest")
+		endBlock = nil
+	}
+	if err != nil {
+		glog.Fatalf("Failed initialize start block %d: %+v", config.startBlock, err)
+	}
+
+	i := 0
+	for {
+		i++
 		loopStart := time.Now().Unix()
-		lastBlock, err = decodeBlocks(lastBlock, config.blockBatchSize)
+		lastBlock, err = decodeBlocks(lastBlock, endBlock, config.blockBatchSize)
 		if err != nil {
 			glog.Fatalf("Failed block batch %+v", err)
 		}
 		loopEnd := time.Now().Unix()
 		glog.Infof("[%d] Block %d - Loop elapsed: %ds; Total elapsed: %ds", i, lastBlock.Number, (loopEnd - loopStart), (loopEnd - startTime))
+		if endBlock == nil && i > 100 {
+			// no block was in database, so complete max of 100 batches
+			break
+		}
+		if lastBlock == nil {
+			// no block is processed, so quit here
+			break
+		}
+		if endBlock != nil && (lastBlock.Number <= endBlock.Number+1 || lastBlock.ParentHash.String() == endBlock.Hash) {
+			// reached highest blocks already in database, so quit here
+			break
+		}
 	}
 
 	if lastBlock != nil {
@@ -159,11 +196,15 @@ func main() {
 	}
 }
 
-func decodeBlocks(startBlock *common.Block, batchSize int) (lastBlock *common.Block, err error) {
+func decodeBlocks(startBlock *common.Block, endBlock *common.Block, batchSize int) (lastBlock *common.Block, err error) {
 	if startBlock == nil {
 		block, err := proc.LastConfirmedBlock(config.blockDelay)
 		if err != nil {
 			return nil, errors.Wrapf(err, "Failed to retrieve last confirmed block")
+		}
+		if endBlock != nil && block.Number <= endBlock.Number {
+			glog.Infof("start block %d is earlier than end block %d", block.Number, endBlock.Number)
+			return nil, nil
 		}
 		// decode the last confirmed block
 		if lastBlock, err = proc.DecodeBlock(block); err != nil {
@@ -174,7 +215,17 @@ func decodeBlocks(startBlock *common.Block, batchSize int) (lastBlock *common.Bl
 	}
 
 	// decode batch of parent blocks
-	for i := 0; i < batchSize; i++ {
+	i := 0
+	for {
+		i++
+		if batchSize > 0 && i > batchSize {
+			glog.Infof("loop reached max batch size %s", i)
+			break
+		}
+		if endBlock != nil && (lastBlock.Number <= endBlock.Number+1 || lastBlock.ParentHash.String() == endBlock.Hash) {
+			glog.Infof("loop reached block %d %s compared to end-block %d %s", lastBlock.Number, lastBlock.ParentHash.String(), endBlock.Number, endBlock.Hash)
+			break
+		}
 		if lastBlock, err = proc.DecodeBlockByHash(lastBlock.ParentHash); err != nil {
 			return lastBlock, errors.Wrapf(err, "Failed to retrieve parent block")
 		}

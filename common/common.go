@@ -19,11 +19,12 @@ type Contract struct {
 	Symbol         string
 	Decimals       uint8
 	TotalSupply    *big.Int
-	UpdatedTime    int64 // date when ERC20 properties and ABI was updated
 	Methods        map[string]*abi.Method
 	Events         map[string]*abi.Event
+	UpdatedTime    int64  // date when ERC20 properties and ABI was updated
 	StartEventTime int64  // first collected event date
 	LastEventTime  int64  // last collected event date
+	LastErrorTime  int64  // last block time when tx/log parsing failed
 	ABI            string // ABI from etherscan; blank if failed to parse
 }
 

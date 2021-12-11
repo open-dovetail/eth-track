@@ -30,7 +30,9 @@ func DecodeTransaction(tx *web3.Transaction, blockTime int64) *common.Transactio
 
 	// decode only if method is specified in the input data
 	if len(tx.Input) < 4 {
-		glog.Infof("Transaction %d: %s No decode", tx.TxnIndex, tx.Hash.String())
+		if glog.V(1) {
+			glog.Infof("Transaction %d: %s No decode", tx.TxnIndex, tx.Hash.String())
+		}
 		return result
 	}
 
@@ -46,7 +48,9 @@ func DecodeTransaction(tx *web3.Transaction, blockTime int64) *common.Transactio
 		glog.Warningf("Transaction %d: %s Failed decode - %s", tx.TxnIndex, tx.Hash.String(), err.Error())
 		result.Method = "UNKNOWN"
 	}
-	glog.Infof("Transaction %d: %s Method %s", tx.TxnIndex, tx.Hash.String(), result.Method)
+	if glog.V(1) {
+		glog.Infof("Transaction %d: %s Method %s", tx.TxnIndex, tx.Hash.String(), result.Method)
+	}
 	return result
 }
 

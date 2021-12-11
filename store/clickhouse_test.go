@@ -84,6 +84,7 @@ func TestContractStore(t *testing.T) {
 		UpdatedTime:    1638850281,
 		StartEventTime: 1638850281,
 		LastEventTime:  0,
+		LastErrorTime:  0,
 		ABI:            abiCode,
 	}
 	tx, err := GetDBTx()
@@ -98,7 +99,7 @@ func TestContractStore(t *testing.T) {
 
 	// query the contract
 	c, err := QueryContract(address)
-	assert.NoError(t, err, "query contract should not thrown exception")
+	assert.NoError(t, err, "query contract should not throw exception")
 	assert.NotNil(t, c, "query result should not be empty")
 
 	assert.Equal(t, address, c.Address, "query result does not match address")
@@ -110,4 +111,19 @@ func TestContractStore(t *testing.T) {
 	utcTime := secondsToDateTime(1638850281)
 	assert.Equal(t, timeToDate(utcTime), c.UpdatedTime, "query result does not match updatedTime")
 	assert.NotEmpty(t, c.ABI, "query result ABI should not be empty")
+}
+
+func TestBlockQuery(t *testing.T) {
+	latestBlock, err := QueryBlock("latest")
+	assert.NoError(t, err, "query latest block should not throw exception")
+	earliestBlock, err := QueryBlock("earliest")
+	assert.NoError(t, err, "query earliest block should not throw exception")
+	if latestBlock != nil {
+		assert.NotNil(t, earliestBlock, "earliest block should not be nil")
+		// fmt.Println("earliest block", earliestBlock.Number, earliestBlock.Hash, earliestBlock.BlockTime, secondsToDateTime(earliestBlock.BlockTime))
+		assert.GreaterOrEqual(t, latestBlock.Number, earliestBlock.Number, "latest block number should be greater than earliest block number")
+		assert.GreaterOrEqual(t, latestBlock.BlockTime, earliestBlock.BlockTime, "latest block time should be greater than earliest block time")
+		assert.Equal(t, 66, len(latestBlock.Hash), "block hash should be 66 characters long")
+		assert.Equal(t, 66, len(earliestBlock.Hash), "block hash should be 66 characters long")
+	}
 }

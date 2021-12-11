@@ -11,6 +11,7 @@ CREATE TABLE ethdb.contracts
     `UpdatedDate` Date,
     `StartEventDate` Date,
     `LastEventDate` Date,
+    `LastErrorTime` DateTime,
     `ABI` String
 ) ENGINE = ReplacingMergeTree()
 ORDER BY (Address);
