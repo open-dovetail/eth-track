@@ -5,6 +5,7 @@ import (
 	"database/sql/driver"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"net/url"
 	"reflect"
@@ -116,6 +117,51 @@ func (c *ClickHouseConnection) Query(sql string, args ...interface{}) (*sql.Rows
 	return c.connection.Query(sql, args...)
 }
 
+// if sortHi=true: get the row with highest HiBlock
+//    sortHi=false: get the row with lowest LowBlock
+func QueryProgress(processID common.ProcessType, sortHi bool) (*common.Progress, error) {
+	sql := fmt.Sprintf("SELECT HiBlock, LowBlock, HiBlockTime, LowBlockTime FROM progress WHERE ProcessID = %d ", int16(processID))
+	if sortHi {
+		sql += "order by HiBlock desc"
+	} else {
+		sql += "order by LowBlock"
+	}
+
+	rows, err := db.Query(sql)
+	if err != nil {
+		return nil, errors.Wrapf(err, "Failed to query progress for '%s'", processID)
+	}
+
+	// Gets the first returned row because it is expected to return 1 row
+	defer rows.Close()
+
+	if rows.Next() {
+		progress := &common.Progress{
+			ProcessID: processID,
+		}
+
+		// clickhouse stores date w/o timezone, and
+		// go-clickhouse dataparser.go parses query result using UTC by default
+		var hiBlockTime, lowBlockTime time.Time
+
+		if err := rows.Scan(
+			&progress.HiBlock,
+			&progress.LowBlock,
+			&hiBlockTime,
+			&lowBlockTime,
+		); err != nil {
+			return nil, errors.Wrapf(err, "Failed to parse query result for progress of '%s'", processID)
+		}
+		progress.HiBlockTime = hiBlockTime.Unix()
+		progress.LowBlockTime = lowBlockTime.Unix()
+		if glog.V(2) {
+			glog.Infoln("Query progress", progress.ProcessID, progress.HiBlock, hiBlockTime, progress.LowBlock, lowBlockTime)
+		}
+		return progress, nil
+	}
+	return nil, nil
+}
+
 // return number of blocks in database
 func CountBlocks() (int, error) {
 	if db == nil {
@@ -139,30 +185,34 @@ func CountBlocks() (int, error) {
 	return 0, nil
 }
 
-// query block of time 'latest', 'earlest', or specific time, e.g., '2021-12-10 16:13:33'
-func QueryBlock(blockTime string) (*common.Block, error) {
-	count, err := CountBlocks()
-	if err != nil {
+// query block relative to a reference block number;
+// if later = true: return the block immediately after the ref block
+//    later = false: return the block immediately before the ref block
+// if refBlock=0, return max block if later=true, min block otherwise
+// return nil if no such block exists in the database
+func QueryBlock(refBlock uint64, later bool) (*common.Block, error) {
+	if count, err := CountBlocks(); err != nil || count == 0 {
 		return nil, err
 	}
 
-	if count == 0 {
-		// database does not have any blocks
-		return nil, nil
-	}
-
-	sql := `SELECT Number, Hash, BlockTime FROM blocks WHERE BlockTime = `
-	if blockTime == "latest" {
-		sql += "(select max(BlockTime) from blocks)"
-	} else if blockTime == "earliest" {
-		sql += "(select min(BlockTime) from blocks)"
+	sql := `SELECT Number, Hash, BlockTime FROM blocks WHERE Number = `
+	if refBlock > 0 {
+		if later {
+			sql += fmt.Sprintf("(select min(Number) from blocks where Number > %d)", refBlock)
+		} else {
+			sql += fmt.Sprintf("(select max(Number) from blocks where Number < %d)", refBlock)
+		}
 	} else {
-		sql += "'" + blockTime + "'"
+		if later {
+			sql += "(select max(Number) from blocks)"
+		} else {
+			sql += "(select min(Number) from blocks)"
+		}
 	}
 	rows, err := db.Query(sql)
 
 	if err != nil {
-		return nil, errors.Wrapf(err, "Failed to query block at %s", blockTime)
+		return nil, errors.Wrapf(err, "Failed to query block relative to %d later %t", refBlock, later)
 	}
 
 	// Gets the first returned row because it is expected to return 1 row
@@ -282,6 +332,9 @@ func (c *ClickHouseConnection) startTx() (*ClickHouseTransaction, error) {
 	if err := txn.prepareLogStmt(); err != nil {
 		return nil, err
 	}
+	if err := txn.prepareProgressStmt(); err != nil {
+		return nil, err
+	}
 	return txn, nil
 }
 
@@ -300,6 +353,45 @@ func (t *ClickHouseTransaction) RollbackTx() error {
 
 	err := t.tx.Rollback()
 	txn = nil
+	return err
+}
+
+func (t *ClickHouseTransaction) prepareProgressStmt() error {
+	if _, ok := t.stmts["progress"]; !ok {
+		stmt, err := t.tx.Prepare(`
+			INSERT INTO progress (
+				ProcessID,
+				HiBlock,
+				LowBlock,
+				HiBlockTime,
+				LowBlockTime
+			) VALUES (
+				?, ?, ?, ?, ?
+			)`)
+		if err != nil {
+			return err
+		}
+		t.stmts["progress"] = stmt
+	}
+	return nil
+}
+
+func (t *ClickHouseTransaction) InsertProgress(progress *common.Progress) error {
+	txnLock.Lock()
+	defer txnLock.Unlock()
+
+	stmt, ok := t.stmts["progress"]
+	if !ok {
+		return errors.New("progress statement is not prepared for ClickHouse transaction")
+	}
+
+	_, err := stmt.Exec(
+		int16(progress.ProcessID),
+		clickhouse.UInt64(progress.HiBlock),
+		clickhouse.UInt64(progress.LowBlock),
+		secondsToDateTime(progress.HiBlockTime),
+		secondsToDateTime(progress.LowBlockTime),
+	)
 	return err
 }
 

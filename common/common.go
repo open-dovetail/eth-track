@@ -67,3 +67,24 @@ type EventLog struct {
 	Params      []*NamedValue
 	BlockTime   int64
 }
+
+type ProcessType int16
+
+const (
+	Undefined ProcessType = iota
+	AddTransaction
+	SetStatus
+	AddEvent
+)
+
+func (p ProcessType) String() string {
+	return [...]string{"unknown", "transaction", "status", "event"}[p]
+}
+
+type Progress struct {
+	ProcessID    ProcessType
+	HiBlock      uint64
+	LowBlock     uint64
+	HiBlockTime  int64
+	LowBlockTime int64
+}

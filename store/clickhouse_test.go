@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/open-dovetail/eth-track/common"
 	"github.com/pkg/errors"
@@ -113,11 +114,57 @@ func TestContractStore(t *testing.T) {
 	assert.NotEmpty(t, c.ABI, "query result ABI should not be empty")
 }
 
+func TestProgressStore(t *testing.T) {
+	// setup test data
+	utc, _ := time.LoadLocation("UTC")
+	hit, _ := time.ParseInLocation("2006-01-02 15:04:05", "2021-12-11 07:37:04", utc)
+	lowt, _ := time.ParseInLocation("2006-01-02 15:04:05", "2021-12-10 16:13:33", utc)
+
+	progress := &common.Progress{
+		ProcessID:    common.AddTransaction,
+		HiBlock:      13782538,
+		LowBlock:     13778418,
+		HiBlockTime:  hit.Unix(),
+		LowBlockTime: lowt.Unix(),
+	}
+
+	tx, err := GetDBTx()
+	require.NoError(t, err, "Start DB Tx should not throw exception")
+	assert.NotNil(t, tx, "DB Tx should not be nil")
+
+	err = tx.InsertProgress(progress)
+	require.NoError(t, err, "Insert progress should not throw exception")
+
+	err = tx.CommitTx()
+	assert.NoError(t, err, "Commit Tx should not through exception")
+
+	// query the progress
+	p, err := QueryProgress(common.AddTransaction, true)
+	assert.NoError(t, err, "query progress should not throw exception")
+	assert.NotNil(t, p, "query result should not be empty")
+
+	assert.Equal(t, progress.HiBlock, p.HiBlock, "query result does not match high block")
+	assert.Equal(t, progress.LowBlock, p.LowBlock, "query result does not match low block")
+	assert.Equal(t, progress.HiBlockTime, p.HiBlockTime, "query result does not match high block time")
+	assert.Equal(t, progress.LowBlockTime, p.LowBlockTime, "query result does not match low block time")
+}
+
 func TestBlockQuery(t *testing.T) {
-	latestBlock, err := QueryBlock("latest")
+	latestBlock, err := QueryBlock(0, true)
 	assert.NoError(t, err, "query latest block should not throw exception")
-	earliestBlock, err := QueryBlock("earliest")
+	earliestBlock, err := QueryBlock(0, false)
 	assert.NoError(t, err, "query earliest block should not throw exception")
+	if earliestBlock != nil {
+		block, err := QueryBlock(earliestBlock.Number, false)
+		assert.NoError(t, err, "query non-existing block should not throw exception")
+		assert.Nil(t, block, "should return nil if block does not exist")
+		block, err = QueryBlock(earliestBlock.Number, true)
+		assert.NoError(t, err, "next to earliest block should not throw exception")
+		if block != nil {
+			// fmt.Println("next to earliest block", block.Number, block.Hash, block.BlockTime, secondsToDateTime(block.BlockTime))
+			assert.Equal(t, earliestBlock.Number+1, block.Number, "block number difference should be 1")
+		}
+	}
 	if latestBlock != nil {
 		assert.NotNil(t, earliestBlock, "earliest block should not be nil")
 		// fmt.Println("earliest block", earliestBlock.Number, earliestBlock.Hash, earliestBlock.BlockTime, secondsToDateTime(earliestBlock.BlockTime))

@@ -1,5 +1,16 @@
 CREATE DATABASE IF NOT EXISTS ethdb;
 
+DROP TABLE IF EXISTS ethdb.progress;
+CREATE TABLE ethdb.progress
+(
+    `ProcessID` Int16,
+    `HiBlock` UInt64,
+    `LowBlock` UInt64,
+    `HiBlockTime` DateTime('UTC'),
+    `LowBlockTime` DateTime('UTC')
+) ENGINE = ReplacingMergeTree()
+ORDER BY (ProcessID);
+
 DROP TABLE IF EXISTS ethdb.contracts;
 CREATE TABLE ethdb.contracts
 (
@@ -30,7 +41,7 @@ CREATE TABLE ethdb.blocks
     `BlockTime` DateTime('UTC')
 ) ENGINE = CollapsingMergeTree(Status)
 PARTITION BY toYYYYMM(BlockTime)
-ORDER BY (BlockTime, Number);
+ORDER BY (Number);
 
 DROP TABLE IF EXISTS ethdb.transactions;
 CREATE TABLE ethdb.transactions

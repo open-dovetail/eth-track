@@ -24,8 +24,6 @@ type Config struct {
 	dbName         string // clickhouse database name
 	dbUser         string // clickhouse user name
 	dbPassword     string // clickhouse user password
-	startBlock     int64  // latest block number to process
-	endBlock       int64  // earliest block number to process
 }
 
 var config = &Config{}
@@ -41,8 +39,6 @@ func init() {
 	flag.StringVar(&config.dbName, "dbName", "ethdb", "Etherscan API key")
 	flag.StringVar(&config.dbUser, "dbUser", "default", "Etherscan API key")
 	flag.StringVar(&config.dbPassword, "dbPassword", "clickhouse", "Etherscan API key")
-	flag.Int64Var(&config.startBlock, "startBlock", 0, "latest block number to process. 0=latest block on chain; -1=earliest block in database.")
-	flag.Int64Var(&config.endBlock, "endBlock", 0, "earliest block number to process. 0=latest block in database; -1=no limit")
 }
 
 // check env variables, which overrides the commandline input
@@ -141,40 +137,111 @@ func main() {
 		glog.Fatalf("Failed initialization: %+v", err)
 	}
 
-	startTime := time.Now().Unix()
-	var lastBlock, endBlock *common.Block
-	var err error
-	if config.endBlock > 0 {
-		endBlock, err = proc.GetBlockByNumber(uint64(config.endBlock))
-	} else if config.endBlock == 0 {
-		endBlock, err = store.QueryBlock("latest")
+	latest, _ := store.QueryBlock(0, true)
+	fillBlockGap(latest)
+
+	// process new blocks on chain
+	var endBlock uint64
+	if latest != nil {
+		endBlock = latest.Number
 	}
-	if err != nil {
-		glog.Fatalf("Failed initialize end block %d: %+v", config.endBlock, err)
+	if block, _ := decodeConfirmedBlock(endBlock); block != nil {
+		lastBlock := batchLoop(block, latest, 100)
+		if latest == nil {
+			progress := &common.Progress{
+				ProcessID:    common.AddTransaction,
+				HiBlock:      block.Number,
+				HiBlockTime:  block.BlockTime,
+				LowBlock:     latest.Number,
+				LowBlockTime: latest.BlockTime,
+			}
+			store.MustGetDBTx().InsertProgress(progress)
+
+		} else if latest.Number+1 >= lastBlock.Number {
+			earliest, _ := store.QueryBlock(0, false)
+			progress := &common.Progress{
+				ProcessID:    common.AddTransaction,
+				HiBlock:      block.Number,
+				HiBlockTime:  block.BlockTime,
+				LowBlock:     earliest.Number,
+				LowBlockTime: earliest.BlockTime,
+			}
+			store.MustGetDBTx().InsertProgress(progress)
+		}
 	}
 
-	if config.startBlock > 0 {
-		lastBlock, err = proc.GetBlockByNumber(uint64(config.startBlock))
-	} else if config.startBlock < 0 {
-		lastBlock, err = store.QueryBlock("earliest")
-		endBlock = nil
+	store.MustGetDBTx().CommitTx()
+	if err := store.GetDBConnection().Close(); err != nil {
+		glog.Errorf("Failed to close db connection: %4", err.Error())
 	}
-	if err != nil {
-		glog.Fatalf("Failed initialize start block %d: %+v", config.startBlock, err)
+}
+
+// process missing blocks between recorded top blocks and HiBlock in grogress table
+func fillBlockGap(latest *common.Block) {
+	if latest == nil {
+		// blocks table is empty, so no gap
+		return
 	}
+	progress, _ := store.QueryProgress(common.AddTransaction, true)
+	if progress == nil {
+		// nothing recorded in progress, so no gap
+		return
+	}
+	if latest.Number <= progress.HiBlock+1 {
+		// recorded blocks is lower than progress, so no gap
+		return
+	}
+
+	// fill in possible gap, then update progress
+	gap, _ := store.QueryBlock(progress.HiBlock, true)
+	if gap.Number > progress.HiBlock+1 {
+		hiBlock, _ := proc.GetBlockByNumber(progress.HiBlock)
+		lastBlock := batchLoop(gap, hiBlock, 0)
+		if lastBlock != nil && progress.HiBlock+1 >= lastBlock.Number {
+			// gap filled, so update progress
+			progress.HiBlock = latest.Number
+			progress.HiBlockTime = latest.BlockTime
+			store.MustGetDBTx().InsertProgress(progress)
+		} else {
+			// unexpected early exit of gap-filling loop
+			glog.Fatalf("gap between %d and %d is not filled", progress.HiBlock, lastBlock.Number)
+		}
+	} else {
+		// no gap, so update progress
+		progress.HiBlock = latest.Number
+		progress.HiBlockTime = latest.BlockTime
+		store.MustGetDBTx().InsertProgress(progress)
+	}
+}
+
+// process blocks from the parent of a start block backwards up to before the end block.
+// if end block is not specified, exit when maxBatch loops are complete
+func batchLoop(startBlock, endBlock *common.Block, maxBatch int) *common.Block {
+	if startBlock == nil {
+		// start block must be specified
+		return nil
+	}
+	if endBlock != nil && endBlock.Number+1 >= startBlock.Number {
+		// nothing to process before end block
+		return nil
+	}
+
+	startTime := time.Now().Unix()
+	lastBlock := startBlock
+	var err error
 
 	i := 0
 	for {
 		i++
 		loopStart := time.Now().Unix()
-		lastBlock, err = decodeBlocks(lastBlock, endBlock, config.blockBatchSize)
+		lastBlock, err = decodeBatch(lastBlock, endBlock, config.blockBatchSize)
 		if err != nil {
 			glog.Fatalf("Failed block batch %+v", err)
 		}
 		loopEnd := time.Now().Unix()
 		glog.Infof("[%d] Block %d - Loop elapsed: %ds; Total elapsed: %ds", i, lastBlock.Number, (loopEnd - loopStart), (loopEnd - startTime))
-		if endBlock == nil && i > 100 {
-			// no block was in database, so complete max of 100 batches
+		if endBlock == nil && i > maxBatch {
+			// end block is not specified, so complete max number of batches
 			break
 		}
 		if lastBlock == nil {
@@ -186,33 +253,28 @@ func main() {
 			break
 		}
 	}
-
-	if lastBlock != nil {
-		glog.Infof("Last block %d", lastBlock.Number)
-	}
-
-	if err := store.GetDBConnection().Close(); err != nil {
-		glog.Errorf("Failed to close db connection: %4", err.Error())
-	}
+	glog.Flush()
+	return lastBlock
 }
 
-func decodeBlocks(startBlock *common.Block, endBlock *common.Block, batchSize int) (lastBlock *common.Block, err error) {
-	if startBlock == nil {
-		block, err := proc.LastConfirmedBlock(config.blockDelay)
-		if err != nil {
-			return nil, errors.Wrapf(err, "Failed to retrieve last confirmed block")
-		}
-		if endBlock != nil && block.Number <= endBlock.Number {
-			glog.Infof("start block %d is earlier than end block %d", block.Number, endBlock.Number)
-			return nil, nil
-		}
-		// decode the last confirmed block
-		if lastBlock, err = proc.DecodeBlock(block); err != nil {
-			return lastBlock, err
-		}
-	} else {
-		lastBlock = startBlock
+// decode latest confirmed block on chain.
+// do nothing if refBlock is later than the latest confirmed block.
+func decodeConfirmedBlock(refBlock uint64) (lastBlock *common.Block, err error) {
+	block, err := proc.LastConfirmedBlock(config.blockDelay)
+	if err != nil {
+		return nil, errors.Wrapf(err, "Failed to retrieve last confirmed block")
 	}
+	if block.Number <= refBlock {
+		glog.Infof("confirmed block %d is earlier than ref block %d", block.Number, refBlock)
+		return nil, nil
+	}
+	// decode the last confirmed block
+	return proc.DecodeBlock(block)
+}
+
+func decodeBatch(startBlock, endBlock *common.Block, batchSize int) (lastBlock *common.Block, err error) {
+
+	lastBlock = startBlock
 
 	// decode batch of parent blocks
 	i := 0
