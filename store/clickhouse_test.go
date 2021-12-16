@@ -116,9 +116,8 @@ func TestContractStore(t *testing.T) {
 
 func TestProgressStore(t *testing.T) {
 	// setup test data
-	utc, _ := time.LoadLocation("UTC")
-	hit, _ := time.ParseInLocation("2006-01-02 15:04:05", "2021-12-11 07:37:04", utc)
-	lowt, _ := time.ParseInLocation("2006-01-02 15:04:05", "2021-12-10 16:13:33", utc)
+	hit, _ := time.ParseInLocation("2006-01-02 15:04:05", "2021-12-11 07:37:04", time.UTC)
+	lowt, _ := time.ParseInLocation("2006-01-02 15:04:05", "2021-12-10 16:13:33", time.UTC)
 
 	progress := &common.Progress{
 		ProcessID:    common.AddTransaction,

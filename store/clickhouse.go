@@ -242,6 +242,117 @@ func QueryBlock(refBlock uint64, later bool) (*common.Block, error) {
 	return nil, nil
 }
 
+// return rows of transactions of a range of block time
+func QueryTransactions(startTime time.Time, endTime time.Time) (*sql.Rows, error) {
+	if db == nil {
+		return nil, errors.New("Database connection is not initialized")
+	}
+
+	rows, err := db.Query(`
+		SELECT
+			To,
+			BlockTime,
+			Hash,
+			BlockNumber,
+			Status
+		FROM transactions
+		WHERE BlockTime >= ? AND BlockTime < ?`, startTime, endTime)
+
+	if err != nil {
+		return nil, errors.Wrapf(err, "Failed to query transactions between %s and %s", startTime, endTime)
+	}
+	return rows, nil
+}
+
+func (t *ClickHouseTransaction) RejectTransaction(to, hash string, blockTime time.Time) error {
+	// query specified transaction
+	rows, err := db.Query(`
+		SELECT
+			BlockNumber,
+			TxnIndex,
+			Status,
+			From,
+			Method,
+			Params.Name,
+			Params.Seq,
+			Params.ValueString,
+			Params.ValueDouble,
+			GasPrice,
+			Gas,
+			Value,
+			Nonce
+		FROM transactions
+		WHERE To = ? AND BlockTime = ? AND Hash = ?`, to, blockTime, hash)
+	if err != nil {
+		return errors.Wrapf(err, "Failed to query transaction 0x%s", hash)
+	}
+
+	// fetch and update the first row in the resultset
+	defer rows.Close()
+	if rows.Next() {
+		var (
+			blockNumber, txnIndex, gasPrice, gas, nonce uint64
+			status                                      int8
+			value                                       float64
+			from, method                                string
+			paramNames, paramStrings                    []string
+			paramSeqs                                   []int8
+			paramDoubles                                []float64
+		)
+
+		if err = rows.Scan(
+			&blockNumber,
+			&txnIndex,
+			&status,
+			&from,
+			&method,
+			&paramNames,
+			&paramSeqs,
+			&paramStrings,
+			&paramDoubles,
+			&gasPrice,
+			&gas,
+			&value,
+			&nonce,
+		); err != nil {
+			return errors.Wrapf(err, "Failed to parse query result for transaction 0x%s", hash)
+		}
+
+		// update transaction status with all other values unchanged
+		txnLock.Lock()
+		defer txnLock.Unlock()
+
+		stmt, ok := t.stmts["transaction"]
+		if !ok {
+			return errors.New("transaction statement is not prepared for ClickHouse transaction")
+		}
+
+		_, err = stmt.Exec(
+			hash,
+			clickhouse.UInt64(blockNumber),
+			clickhouse.UInt64(txnIndex),
+			int8(-1),
+			from,
+			to,
+			method,
+			clickhouse.Array(paramNames),
+			clickhouse.Array(paramSeqs),
+			clickhouse.Array(paramStrings),
+			clickhouse.Array(paramDoubles),
+			clickhouse.UInt64(gasPrice),
+			clickhouse.UInt64(gas),
+			value,
+			clickhouse.UInt64(nonce),
+			blockTime,
+		)
+		if glog.V(2) {
+			glog.Infof("Reject transaction 0x%s at block time %s", hash, blockTime)
+		}
+	}
+
+	return err
+}
+
 func QueryContract(address string) (*common.Contract, error) {
 	if db == nil {
 		return nil, errors.New("Database connection is not initialized")

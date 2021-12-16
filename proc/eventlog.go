@@ -31,7 +31,9 @@ func DecodeEventLog(wlog *web3.Log, blockTime int64) *common.EventLog {
 		result.Event = data.Name
 		result.Params = data.Params
 	} else {
-		glog.Warningf("Event log %d: %s Failed decode - %s", wlog.LogIndex, wlog.TransactionHash.String(), err.Error())
+		if glog.V(1) {
+			glog.Warningf("Event log %d: %s Failed decode - %s", wlog.LogIndex, wlog.TransactionHash.String(), err.Error())
+		}
 		result.Event = "UNKNOWN"
 	}
 	if glog.V(1) {

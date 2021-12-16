@@ -45,7 +45,9 @@ func DecodeTransaction(tx *web3.Transaction, blockTime int64) *common.Transactio
 		result.Method = data.Name
 		result.Params = data.Params
 	} else {
-		glog.Warningf("Transaction %d: %s Failed decode - %s", tx.TxnIndex, tx.Hash.String(), err.Error())
+		if glog.V(1) {
+			glog.Warningf("Transaction %d: %s Failed decode - %s", tx.TxnIndex, tx.Hash.String(), err.Error())
+		}
 		result.Method = "UNKNOWN"
 	}
 	if glog.V(1) {

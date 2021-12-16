@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"os"
+	"os/signal"
 	"time"
 
 	"github.com/golang/glog"
@@ -20,6 +21,8 @@ type Config struct {
 	etherscanDelay int    // delay of consecutive etherscan API invocation in ms
 	blockDelay     int    // blockchain height delay for last confirmed block
 	blockBatchSize int    // number of blocks to process per db commit
+	maxBatches     int    // max number of batches to process
+	command        string // newTx, oldTx, or rejectTx
 	dbURL          string // clickhouse URL
 	dbName         string // clickhouse database name
 	dbUser         string // clickhouse user name
@@ -35,6 +38,8 @@ func init() {
 	flag.IntVar(&config.etherscanDelay, "etherscanDelay", 350, "delay in millis between etherscan API calls")
 	flag.IntVar(&config.blockDelay, "blockDelay", 12, "blockchain height delay for last confirmed block")
 	flag.IntVar(&config.blockBatchSize, "blockBatchSize", 40, "number of blocks to process per db commit")
+	flag.IntVar(&config.maxBatches, "maxBatches", 100, "max number of batches to process")
+	flag.StringVar(&config.command, "command", "newTx", "newTx or oldTx to decode transactions; or rejectTx to update transaction status")
 	flag.StringVar(&config.dbURL, "dbURL", "http://127.0.0.1:8123", "Etherscan API key")
 	flag.StringVar(&config.dbName, "dbName", "ethdb", "Etherscan API key")
 	flag.StringVar(&config.dbUser, "dbUser", "default", "Etherscan API key")
@@ -91,6 +96,52 @@ func envOverride() {
 	}
 }
 
+var done = false
+
+// Turn on verbose logging using option -v 2
+// Log to stderr using option -logtostderr or set env GLOG_logtostderr=true
+// or log to specified folder using option -log_dir="mylogdir"
+func main() {
+	// parse command-line args
+	flag.Parse()
+
+	// initialize connections
+	if err := connect(); err != nil {
+		glog.Fatalf("Failed initialization: %+v", err)
+	}
+
+	if config.command == "oldTx" {
+		processOldBlocks()
+	} else if config.command == "newTx" {
+		processNewBlocks()
+	} else if config.command == "rejectTx" {
+		processTxStatus()
+	} else if config.command == "default" {
+		ch := make(chan os.Signal)
+		signal.Notify(ch, os.Interrupt, os.Kill)
+		go listenForShutdown(ch)
+		for !done {
+			// loop until manual interruption
+			processNewBlocks()
+			processOldBlocks()
+		}
+	} else {
+		glog.Fatalf("command '%s' is not supported", config.command)
+	}
+
+	store.MustGetDBTx().CommitTx()
+	if err := store.GetDBConnection().Close(); err != nil {
+		glog.Errorf("Failed to close db connection: %4", err.Error())
+	}
+	glog.Flush()
+}
+
+func listenForShutdown(ch <-chan os.Signal) {
+	<-ch
+	glog.Info("Interrupt received ...")
+	done = true
+}
+
 // initialize connections
 func connect() error {
 	// override config with env vars
@@ -125,18 +176,34 @@ func connect() error {
 	return nil
 }
 
-// Turn on verbose logging using option -v 2
-// Log to stderr using option -logtostderr or set env GLOG_logtostderr=true
-// or log to specified folder using option -log_dir="mylogdir"
-func main() {
-	// parse command-line args
-	flag.Parse()
-
-	// initialize connections
-	if err := connect(); err != nil {
-		glog.Fatalf("Failed initialization: %+v", err)
+// process blocks older than the earliest block in db
+func processOldBlocks() {
+	earliest, _ := store.QueryBlock(0, false)
+	if earliest == nil {
+		earliest, _ = decodeConfirmedBlock(0)
 	}
+	glog.Infof("start processing earlier blocks from %d for %d batches", earliest.Number, config.maxBatches)
+	lastBlock := batchLoop(earliest, nil, config.maxBatches)
+	progress, _ := store.QueryProgress(common.AddTransaction, false)
+	if progress != nil {
+		progress.LowBlock = lastBlock.Number
+		progress.LowBlockTime = lastBlock.BlockTime
+	} else {
+		latest, _ := store.QueryBlock(0, true)
+		progress = &common.Progress{
+			ProcessID:    common.AddTransaction,
+			HiBlock:      latest.Number,
+			HiBlockTime:  latest.BlockTime,
+			LowBlock:     lastBlock.Number,
+			LowBlockTime: lastBlock.BlockTime,
+		}
+	}
+	store.MustGetDBTx().InsertProgress(progress)
+	glog.Infof("updated progress for blocks between %d and %d", progress.HiBlock, progress.LowBlock)
+}
 
+// process blocks newer than the most recent block in db
+func processNewBlocks() {
 	latest, _ := store.QueryBlock(0, true)
 	fillBlockGap(latest)
 
@@ -146,7 +213,8 @@ func main() {
 		endBlock = latest.Number
 	}
 	if block, _ := decodeConfirmedBlock(endBlock); block != nil {
-		lastBlock := batchLoop(block, latest, 100)
+		glog.Infof("start processing recent blocks between %d and %d", block.Number, latest.Number)
+		lastBlock := batchLoop(block, latest, config.maxBatches)
 		if latest == nil {
 			progress := &common.Progress{
 				ProcessID:    common.AddTransaction,
@@ -156,7 +224,7 @@ func main() {
 				LowBlockTime: latest.BlockTime,
 			}
 			store.MustGetDBTx().InsertProgress(progress)
-
+			glog.Infof("updated progress for blocks between %d and %d", progress.HiBlock, progress.LowBlock)
 		} else if latest.Number+1 >= lastBlock.Number {
 			earliest, _ := store.QueryBlock(0, false)
 			progress := &common.Progress{
@@ -167,13 +235,120 @@ func main() {
 				LowBlockTime: earliest.BlockTime,
 			}
 			store.MustGetDBTx().InsertProgress(progress)
+			glog.Infof("updated progress for blocks between %d and %d", progress.HiBlock, progress.LowBlock)
 		}
 	}
+}
 
-	store.MustGetDBTx().CommitTx()
-	if err := store.GetDBConnection().Close(); err != nil {
-		glog.Errorf("Failed to close db connection: %4", err.Error())
+// check transaction status, and remove rejected transactions
+func processTxStatus() {
+	glog.Info("Check transaction status ...")
+	progress, _ := store.QueryProgress(common.SetStatus, true)
+	latest, _ := store.QueryBlock(0, true)
+	earliest, _ := store.QueryBlock(0, false)
+	if latest == nil || earliest == nil {
+		glog.Warning("No transaction is collected, so do nothing")
 	}
+	if progress == nil {
+		startTime := time.Unix(earliest.BlockTime, 0).UTC()
+		endTime := time.Unix(latest.BlockTime, 0).UTC().Add(time.Second)
+		progress = rejectTransactions(startTime, endTime)
+		store.MustGetDBTx().InsertProgress(progress)
+		glog.Infof("updated progress for blocks between %d and %d", progress.HiBlock, progress.LowBlock)
+	} else if progress.HiBlock < latest.Number {
+		startTime := time.Unix(progress.HiBlockTime, 0).UTC().Add(time.Second)
+		endTime := time.Unix(latest.BlockTime, 0).UTC().Add(time.Second)
+		dp := rejectTransactions(startTime, endTime)
+		progress.HiBlock = dp.HiBlock
+		progress.HiBlockTime = dp.HiBlockTime
+		if progress.LowBlock > earliest.Number {
+			startTime := time.Unix(earliest.BlockTime, 0).UTC()
+			endTime := time.Unix(progress.LowBlockTime, 0).UTC()
+			dp := rejectTransactions(startTime, endTime)
+			progress.LowBlock = dp.LowBlock
+			progress.LowBlockTime = dp.LowBlockTime
+		}
+		store.MustGetDBTx().InsertProgress(progress)
+		glog.Infof("updated progress for blocks between %d and %d", progress.HiBlock, progress.LowBlock)
+	} else if progress.LowBlock > earliest.Number {
+		startTime := time.Unix(earliest.BlockTime, 0).UTC()
+		endTime := time.Unix(progress.LowBlockTime, 0).UTC()
+		dp := rejectTransactions(startTime, endTime)
+		progress.LowBlock = dp.LowBlock
+		progress.LowBlockTime = dp.LowBlockTime
+		store.MustGetDBTx().InsertProgress(progress)
+		glog.Infof("updated progress for blocks between %d and %d", progress.HiBlock, progress.LowBlock)
+	}
+}
+
+// update transaction status for all transactions in a specified time range
+// return progress of scanned blocks
+func rejectTransactions(startTime, endTime time.Time) *common.Progress {
+	rows, err := store.QueryTransactions(startTime, endTime)
+	if err != nil {
+		glog.Fatalf("Failed query transactions between %s and %s: %+v", startTime, endTime, err)
+	}
+
+	defer rows.Close()
+	progress := &common.Progress{
+		ProcessID: common.SetStatus,
+	}
+	count := 0
+	total := 0
+	for rows.Next() {
+		var (
+			to, hash    string
+			blockTime   time.Time
+			blockNumber uint64
+			status      int8
+		)
+		if err := rows.Scan(
+			&to,
+			&blockTime,
+			&hash,
+			&blockNumber,
+			&status,
+		); err != nil {
+			glog.Fatalf("Failed to read query result %+v", err)
+		}
+
+		if progress.LowBlock == 0 || blockNumber < progress.LowBlock {
+			progress.LowBlock = blockNumber
+			progress.LowBlockTime = blockTime.Unix()
+		}
+		if progress.HiBlock == 0 || blockNumber > progress.HiBlock {
+			progress.HiBlock = blockNumber
+			progress.HiBlockTime = blockTime.Unix()
+		}
+		if status == 1 {
+			if state, err := proc.GetTransactionStatus("0x" + hash); err != nil {
+				glog.Errorf("Failed to get transaction status: %s", err.Error())
+			} else if !state {
+				if glog.V(1) {
+					glog.Infof("reject transaction 0x%s", hash)
+				}
+				count++
+				if err := store.MustGetDBTx().RejectTransaction(to, hash, blockTime); err != nil {
+					glog.Errorf("Failed to update transaction status for 0x%s", hash)
+				}
+			}
+
+			if count > 0 && count%(100*config.blockBatchSize) == 0 {
+				glog.Infof("Rejected %d transactions up to block %d", count, progress.HiBlock)
+				total += count
+				count = 0
+				if err := store.MustGetDBTx().CommitTx(); err != nil {
+					glog.Errorf("Failed to commit db transaction: %s", err.Error())
+				}
+			}
+		}
+	}
+	glog.Infof("Rejected %d transactions up to block %d", total+count, progress.HiBlock)
+	if err := store.MustGetDBTx().CommitTx(); err != nil {
+		glog.Errorf("Failed to commit db transaction: %s", err.Error())
+	}
+
+	return progress
 }
 
 // process missing blocks between recorded top blocks and HiBlock in grogress table
@@ -195,6 +370,7 @@ func fillBlockGap(latest *common.Block) {
 	// fill in possible gap, then update progress
 	gap, _ := store.QueryBlock(progress.HiBlock, true)
 	if gap.Number > progress.HiBlock+1 {
+		glog.Infof("start filling block gap between %d and %d", gap.Number, progress.HiBlock)
 		hiBlock, _ := proc.GetBlockByNumber(progress.HiBlock)
 		lastBlock := batchLoop(gap, hiBlock, 0)
 		if lastBlock != nil && progress.HiBlock+1 >= lastBlock.Number {
@@ -281,7 +457,7 @@ func decodeBatch(startBlock, endBlock *common.Block, batchSize int) (lastBlock *
 	for {
 		i++
 		if batchSize > 0 && i > batchSize {
-			glog.Infof("loop reached max batch size %s", i)
+			glog.Infof("loop reached max batch size %d", i)
 			break
 		}
 		if endBlock != nil && (lastBlock.Number <= endBlock.Number+1 || lastBlock.ParentHash.String() == endBlock.Hash) {

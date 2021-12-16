@@ -55,7 +55,7 @@ CREATE TABLE ethdb.transactions
     `Method` String,
     `Params` Nested(
         Name String,
-        Seq UInt8,
+        Seq Int8,
         ValueString String,
         ValueDouble Float64),
     `GasPrice` UInt64,
@@ -79,7 +79,7 @@ CREATE TABLE ethdb.logs
     `Event` String,
     `Params` Nested(
         Name String,
-        Seq UInt8,
+        Seq Int8,
         ValueString String,
         ValueDouble Float64),
     `BlockTime` DateTime('UTC')
