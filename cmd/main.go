@@ -124,6 +124,7 @@ func main() {
 			// loop until manual interruption
 			processNewBlocks()
 			processOldBlocks()
+			processTxStatus()
 		}
 	} else {
 		glog.Fatalf("command '%s' is not supported", config.command)
