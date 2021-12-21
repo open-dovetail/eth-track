@@ -182,7 +182,7 @@ func processOldBlocks() {
 	if earliest == nil {
 		earliest, _ = decodeConfirmedBlock(0)
 	}
-	glog.Infof("start processing earlier blocks from %d for %d batches", earliest.Number, config.maxBatches)
+	glog.Infof("start processing earlier blocks from %d - %s for %d batches", earliest.Number, earliest.ParentHash.String(), config.maxBatches)
 	lastBlock := batchLoop(earliest, nil, config.maxBatches)
 	progress, _ := store.QueryProgress(common.AddTransaction, false)
 	if progress != nil {
@@ -213,15 +213,19 @@ func processNewBlocks() {
 		endBlock = latest.Number
 	}
 	if block, _ := decodeConfirmedBlock(endBlock); block != nil {
-		glog.Infof("start processing recent blocks between %d and %d", block.Number, latest.Number)
+		if latest != nil {
+			glog.Infof("start processing recent blocks between %d and %d", block.Number, latest.Number)
+		} else {
+			glog.Infof("start processing from the latest confirmed block %d", block.Number)
+		}
 		lastBlock := batchLoop(block, latest, config.maxBatches)
 		if latest == nil {
 			progress := &common.Progress{
 				ProcessID:    common.AddTransaction,
 				HiBlock:      block.Number,
 				HiBlockTime:  block.BlockTime,
-				LowBlock:     latest.Number,
-				LowBlockTime: latest.BlockTime,
+				LowBlock:     lastBlock.Number,
+				LowBlockTime: lastBlock.BlockTime,
 			}
 			store.MustGetDBTx().InsertProgress(progress)
 			glog.Infof("updated progress for blocks between %d and %d", progress.HiBlock, progress.LowBlock)

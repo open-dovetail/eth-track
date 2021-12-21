@@ -195,7 +195,7 @@ func QueryBlock(refBlock uint64, later bool) (*common.Block, error) {
 		return nil, err
 	}
 
-	sql := `SELECT Number, Hash, BlockTime FROM blocks WHERE Number = `
+	sql := `SELECT Number, Hash, ParentHash, BlockTime FROM blocks WHERE Number = `
 	if refBlock > 0 {
 		if later {
 			sql += fmt.Sprintf("(select min(Number) from blocks where Number > %d)", refBlock)
@@ -223,16 +223,20 @@ func QueryBlock(refBlock uint64, later bool) (*common.Block, error) {
 
 		// clickhouse stores date w/o timezone, and
 		// go-clickhouse dataparser.go parses query result using UTC by default
-		var blockTime time.Time
-
+		var (
+			blockTime  time.Time
+			parentHash string
+		)
 		if err := rows.Scan(
 			&block.Number,
 			&block.Hash,
+			&parentHash,
 			&blockTime,
 		); err != nil {
 			return nil, errors.Wrapf(err, "Failed to parse query result for block at %s", blockTime)
 		}
 		block.Hash = "0x" + block.Hash
+		block.ParentHash = web3.HexToHash("0x" + parentHash)
 		block.BlockTime = blockTime.Unix()
 		if glog.V(2) {
 			glog.Infoln("Query block", block.Number, block.Hash, block.BlockTime)

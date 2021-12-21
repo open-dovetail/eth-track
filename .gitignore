@@ -1,3 +1,4 @@
 cmd/env.sh
 cmd/cmd
 cmd/log
+.DS_Store
