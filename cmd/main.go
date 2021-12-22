@@ -319,7 +319,7 @@ func rejectTransactions(startTime, endTime time.Time) *common.Progress {
 		}
 		iter++
 		if iter%1000 == 0 {
-			glog.Infof("[%d] %d %s %d", iter, status, hash, blockNumber)
+			glog.Infof("[%d] %d %d %s %d", iter, count, status, hash, blockNumber)
 		}
 
 		if progress.LowBlock == 0 || blockNumber < progress.LowBlock {
