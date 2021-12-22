@@ -300,6 +300,7 @@ func rejectTransactions(startTime, endTime time.Time) *common.Progress {
 	}
 	count := 0
 	total := 0
+	iter := 0
 	for rows.Next() {
 		var (
 			to, hash    string
@@ -316,6 +317,10 @@ func rejectTransactions(startTime, endTime time.Time) *common.Progress {
 		); err != nil {
 			glog.Fatalf("Failed to read query result %+v", err)
 		}
+		iter++
+		if iter%1000 == 0 {
+			glog.Infof("[%d] %d %s %d", iter, status, hash, blockNumber)
+		}
 
 		if progress.LowBlock == 0 || blockNumber < progress.LowBlock {
 			progress.LowBlock = blockNumber
@@ -329,9 +334,7 @@ func rejectTransactions(startTime, endTime time.Time) *common.Progress {
 			if state, err := proc.GetTransactionStatus("0x" + hash); err != nil {
 				glog.Errorf("Failed to get transaction status: %s", err.Error())
 			} else if !state {
-				if glog.V(1) {
-					glog.Infof("reject transaction 0x%s", hash)
-				}
+				glog.Infof("reject transaction 0x%s", hash)
 				count++
 				if err := store.MustGetDBTx().RejectTransaction(to, hash, blockTime); err != nil {
 					glog.Errorf("Failed to update transaction status for 0x%s", hash)
