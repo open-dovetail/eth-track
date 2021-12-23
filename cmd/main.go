@@ -249,6 +249,13 @@ func processNewBlocks() {
 func processTxStatus() {
 	glog.Info("Check transaction status ...")
 	progress, _ := store.QueryProgress(common.SetStatus, true)
+	if progress != nil {
+		lowProgress, _ := store.QueryProgress(common.SetStatus, false)
+		if lowProgress.LowBlock < progress.LowBlock {
+			progress.LowBlock = lowProgress.LowBlock
+			progress.LowBlockTime = lowProgress.LowBlockTime
+		}
+	}
 	latest, _ := store.QueryBlock(0, true)
 	earliest, _ := store.QueryBlock(0, false)
 	if latest == nil || earliest == nil {
