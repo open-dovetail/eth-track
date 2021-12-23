@@ -129,8 +129,8 @@ func NewContract(address string, blockTime int64) (*common.Contract, error) {
 		LastEventTime:  eventTime,
 	}
 
-	// Fetch ABI from etherscan - retry 3 times on etherscan failure
-	for retry := 1; retry <= 3; retry++ {
+	// Fetch ABI from etherscan - retry 10 times on etherscan failure
+	for retry := 1; retry <= 10; retry++ {
 		if data, err := api.FetchABI(address); err == nil {
 			contract.ABI = data
 			break

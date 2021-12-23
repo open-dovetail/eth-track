@@ -86,3 +86,41 @@ CREATE TABLE ethdb.logs
 ) ENGINE = CollapsingMergeTree(Removed)
 PARTITION BY toYYYYMM(BlockTime)
 ORDER BY (Address, BlockTime, BlockNumber, LogIndex);
+
+DROP VIEW IF EXISTS ethdb.tx_view;
+CREATE VIEW ethdb.tx_view AS 
+    SELECT Hash, BlockNumber, TxnIndex, Status, From, To, Method, GasPrice, Gas, Value, Nonce, BlockTime 
+    FROM ethdb.transactions;
+
+DROP VIEW IF EXISTS ethdb.log_view;
+CREATE VIEW ethdb.log_view AS 
+    SELECT BlockNumber, LogIndex, Removed, TxnIndex, TxnHash, Address, Event, BlockTime 
+    FROM ethdb.logs;
+
+DROP VIEW IF EXISTS ethdb.tx_number_params;
+CREATE VIEW ethdb.tx_number_params AS 
+    SELECT Hash, Status, From, To, Method, Params.Name, Params.ValueDouble, BlockTime 
+    FROM ethdb.transactions 
+    ARRAY JOIN Params 
+    WHERE Method != '' AND Method != 'UNKNOWN' AND Params.ValueDouble > 0;
+
+DROP VIEW IF EXISTS ethdb.tx_string_params;
+CREATE VIEW ethdb.tx_string_params AS 
+    SELECT Hash, Status, From, To, Method, Params.Name, Params.ValueString, BlockTime 
+    FROM ethdb.transactions 
+    ARRAY JOIN Params 
+    WHERE Method != '' AND Method != 'UNKNOWN' AND Params.ValueString != '';
+
+DROP VIEW IF EXISTS ethdb.log_number_params;
+CREATE VIEW ethdb.log_number_params AS
+    SELECT BlockNumber, LogIndex, Removed, TxnHash, Address, Event, Params.Name, Params.ValueDouble, BlockTime 
+    FROM ethdb.logs 
+    ARRAY JOIN Params 
+    WHERE Event != 'UNKNOWN' AND Params.ValueDouble > 0;
+
+DROP VIEW IF EXISTS ethdb.log_string_params;
+CREATE VIEW ethdb.log_string_params AS
+    SELECT BlockNumber, LogIndex, Removed, TxnHash, Address, Event, Params.Name, Params.ValueString, BlockTime 
+    FROM ethdb.logs 
+    ARRAY JOIN Params 
+    WHERE Event != 'UNKNOWN' AND Params.ValueString != '';
