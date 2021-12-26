@@ -185,7 +185,7 @@ func processOldBlocks() {
 	}
 	glog.Infof("start processing earlier blocks from %d - %s for %d batches", earliest.Number, earliest.ParentHash.String(), config.maxBatches)
 	lastBlock := batchLoop(earliest, nil, config.maxBatches)
-	progress, _ := store.QueryProgress(common.AddTransaction, false)
+	progress, _ := store.QueryProgress(common.AddTransaction, true)
 	if progress != nil {
 		progress.LowBlock = lastBlock.Number
 		progress.LowBlockTime = lastBlock.BlockTime
@@ -341,7 +341,9 @@ func rejectTransactions(startTime, endTime time.Time) *common.Progress {
 			if state, err := proc.GetTransactionStatus("0x" + hash); err != nil {
 				glog.Errorf("Failed to get transaction status: %s", err.Error())
 			} else if !state {
-				glog.Infof("reject transaction 0x%s", hash)
+				if glog.V(1) {
+					glog.Infof("reject transaction 0x%s", hash)
+				}
 				count++
 				if err := store.MustGetDBTx().RejectTransaction(to, hash, blockTime); err != nil {
 					glog.Errorf("Failed to update transaction status for 0x%s", hash)

@@ -247,7 +247,7 @@ func QueryBlock(refBlock uint64, later bool) (*common.Block, error) {
 }
 
 // return rows of transactions of a range of block time
-func QueryTransactions(startTime time.Time, endTime time.Time) (*sql.Rows, error) {
+func QueryTransactions(startTime, endTime time.Time) (*sql.Rows, error) {
 	if db == nil {
 		return nil, errors.New("Database connection is not initialized")
 	}
