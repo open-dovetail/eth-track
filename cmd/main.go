@@ -248,6 +248,12 @@ func processNewBlocks() {
 // check transaction status, and remove rejected transactions
 func processTxStatus() {
 	glog.Info("Check transaction status ...")
+	latest, _ := store.QueryBlock(0, true)
+	earliest, _ := store.QueryBlock(0, false)
+	if latest == nil || earliest == nil {
+		glog.Warning("No transaction is collected, so do nothing")
+		return
+	}
 	progress, _ := store.QueryProgress(common.SetStatus, true)
 	if progress != nil {
 		lowProgress, _ := store.QueryProgress(common.SetStatus, false)
@@ -256,12 +262,8 @@ func processTxStatus() {
 			progress.LowBlockTime = lowProgress.LowBlockTime
 		}
 	}
-	latest, _ := store.QueryBlock(0, true)
-	earliest, _ := store.QueryBlock(0, false)
-	if latest == nil || earliest == nil {
-		glog.Warning("No transaction is collected, so do nothing")
-	}
 	if progress == nil {
+		// first time for processing tx status
 		startTime := time.Unix(earliest.BlockTime, 0).UTC()
 		endTime := time.Unix(latest.BlockTime, 0).UTC().Add(time.Second)
 		progress = rejectTransactions(startTime, endTime)
@@ -482,7 +484,7 @@ func decodeBatch(startBlock, endBlock *common.Block, batchSize int) (lastBlock *
 			break
 		}
 		if lastBlock, err = proc.DecodeBlockByHash(lastBlock.ParentHash); err != nil {
-			return lastBlock, errors.Wrapf(err, "Failed to retrieve parent block")
+			return lastBlock, errors.Wrapf(err, "Failed to retrieve parent block %s", lastBlock.ParentHash)
 		}
 	}
 
