@@ -1,6 +1,8 @@
 package proc
 
 import (
+	"time"
+
 	"github.com/golang/glog"
 	"github.com/open-dovetail/eth-track/common"
 	"github.com/open-dovetail/eth-track/store"
@@ -49,11 +51,17 @@ func DecodeBlockByNumber(blockNumber uint64) (*common.Block, error) {
 }
 
 func DecodeBlockByHash(blockHash web3.Hash) (*common.Block, error) {
-	block, err := GetEthereumClient().Eth().GetBlockByHash(blockHash, true)
-	if err != nil {
-		return nil, err
+	for retry := 1; retry <= 3; retry++ {
+		if block, err := GetEthereumClient().Eth().GetBlockByHash(blockHash, true); err == nil {
+			return DecodeBlock(block)
+		} else {
+			// Ethereum call failed, wait and retry
+			glog.Warningf("Failed %d times to get block by hash %s: %+v", retry, blockHash.String(), err)
+			time.Sleep(10 * time.Second)
+		}
+
 	}
-	return DecodeBlock(block)
+	return nil, errors.Errorf("Failed to get block by hash %s", blockHash.String())
 }
 
 func DecodeBlock(block *web3.Block) (*common.Block, error) {
