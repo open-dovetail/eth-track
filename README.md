@@ -14,7 +14,7 @@ SELECT
     BlockTime, Symbol, Decimals 
 FROM ethdb.transactions t 
 INNER JOIN ethdb.contracts c 
-ON t.Method = 'transfer' AND t.To = c.Address
+ON t.Method = 'transfer' AND c.Symbol != '' AND t.To = c.Address
 ```
 
 Top daily transfers of ERC20 tokens
@@ -26,7 +26,7 @@ SELECT
     Symbol, toDate(BlockTime) as Date 
 FROM ethdb.transactions t 
 INNER JOIN ethdb.contracts c 
-ON t.Method = 'transfer' AND t.To = c.Address 
+ON t.Method = 'transfer' AND c.Symbol != '' AND t.To = c.Address 
 GROUP BY Symbol, Date 
 ORDER BY Count DESC
 ```
