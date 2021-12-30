@@ -59,7 +59,6 @@ func DecodeBlockByHash(blockHash web3.Hash) (*common.Block, error) {
 			glog.Warningf("Failed %d times to get block by hash %s: %+v", retry, blockHash.String(), err)
 			time.Sleep(10 * time.Second)
 		}
-
 	}
 	return nil, errors.Errorf("Failed to get block by hash %s", blockHash.String())
 }

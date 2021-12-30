@@ -2,9 +2,11 @@ package proc
 
 import (
 	"encoding/hex"
+	"time"
 
 	"github.com/golang/glog"
 	"github.com/open-dovetail/eth-track/common"
+	"github.com/pkg/errors"
 	web3 "github.com/umbracle/go-web3"
 )
 
@@ -58,9 +60,15 @@ func DecodeTransaction(tx *web3.Transaction, blockTime int64) *common.Transactio
 
 // Return false if transaction failed, true if succeeded
 func GetTransactionStatus(txHash string) (bool, error) {
-	var data map[string]interface{}
-	if err := GetEthereumClient().Call("eth_getTransactionReceipt", &data, txHash); err != nil {
-		return false, err
+	for retry := 1; retry <= 3; retry++ {
+		var data map[string]interface{}
+		if err := GetEthereumClient().Call("eth_getTransactionReceipt", &data, txHash); err == nil {
+			return data["status"] == "0x1", nil
+		} else {
+			// Ethereum call failed, wait and retry
+			glog.Warningf("Failed %d times to get status for TxHash %s: %+v", retry, txHash, err)
+			time.Sleep(10 * time.Second)
+		}
 	}
-	return data["status"] == "0x1", nil
+	return false, errors.Errorf("Failed to retrieve status for transaction %s", txHash)
 }
