@@ -348,7 +348,7 @@ func rejectTransactions(startTime, endTime time.Time) *common.Progress {
 				}
 				count++
 				if err := store.MustGetDBTx().RejectTransaction(to, hash, blockTime); err != nil {
-					glog.Errorf("Failed to update transaction status for 0x%s", hash)
+					glog.Errorf("Failed to update transaction status for 0x%s: %+v", hash, err)
 				}
 			}
 
