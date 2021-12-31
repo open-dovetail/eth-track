@@ -303,6 +303,10 @@ func processTxStatus() {
 		progress.LowBlockTime = dp.LowBlockTime
 		store.MustGetDBTx().InsertProgress(progress)
 		glog.Infof("updated progress for blocks between %d and %d", progress.HiBlock, progress.LowBlock)
+	} else {
+		glog.Warning("No new transaction for status check, so do nothing")
+		time.Sleep(120 * time.Second)
+		return
 	}
 	if err := store.MustGetDBTx().CommitTx(); err != nil {
 		glog.Errorf("Failed to commit db transaction: %s", err.Error())
