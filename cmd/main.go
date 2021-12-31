@@ -115,7 +115,13 @@ func main() {
 	} else if config.command == "newTx" {
 		processNewBlocks()
 	} else if config.command == "rejectTx" {
-		processTxStatus()
+		ch := make(chan os.Signal)
+		signal.Notify(ch, os.Interrupt, os.Kill)
+		go listenForShutdown(ch)
+		for !done {
+			// loop until manual interruption
+			processTxStatus()
+		}
 	} else if config.command == "default" {
 		ch := make(chan os.Signal)
 		signal.Notify(ch, os.Interrupt, os.Kill)
@@ -124,7 +130,6 @@ func main() {
 			// loop until manual interruption
 			processNewBlocks()
 			processOldBlocks()
-			processTxStatus()
 		}
 	} else {
 		glog.Fatalf("command '%s' is not supported", config.command)
@@ -248,10 +253,16 @@ func processNewBlocks() {
 // check transaction status, and remove rejected transactions
 func processTxStatus() {
 	glog.Info("Check transaction status ...")
-	latest, _ := store.QueryBlock(0, true)
-	earliest, _ := store.QueryBlock(0, false)
-	if latest == nil || earliest == nil {
+	processed, _ := store.QueryProgress(common.AddTransaction, true)
+	if processed != nil {
+		lowProcessed, _ := store.QueryProgress(common.AddTransaction, false)
+		if lowProcessed.LowBlock < processed.LowBlock {
+			processed.LowBlock = lowProcessed.LowBlock
+			processed.LowBlockTime = lowProcessed.LowBlockTime
+		}
+	} else {
 		glog.Warning("No transaction is collected, so do nothing")
+		time.Sleep(120 * time.Second)
 		return
 	}
 	progress, _ := store.QueryProgress(common.SetStatus, true)
@@ -264,19 +275,19 @@ func processTxStatus() {
 	}
 	if progress == nil {
 		// first time for processing tx status
-		startTime := time.Unix(earliest.BlockTime, 0).UTC()
-		endTime := time.Unix(latest.BlockTime, 0).UTC().Add(time.Second)
+		startTime := time.Unix(processed.LowBlockTime, 0).UTC()
+		endTime := time.Unix(processed.HiBlockTime, 0).UTC().Add(time.Second)
 		progress = rejectTransactions(startTime, endTime)
 		store.MustGetDBTx().InsertProgress(progress)
 		glog.Infof("updated progress for blocks between %d and %d", progress.HiBlock, progress.LowBlock)
-	} else if progress.HiBlock < latest.Number {
+	} else if progress.HiBlock < processed.HiBlock {
 		startTime := time.Unix(progress.HiBlockTime, 0).UTC().Add(time.Second)
-		endTime := time.Unix(latest.BlockTime, 0).UTC().Add(time.Second)
+		endTime := time.Unix(processed.HiBlockTime, 0).UTC().Add(time.Second)
 		dp := rejectTransactions(startTime, endTime)
 		progress.HiBlock = dp.HiBlock
 		progress.HiBlockTime = dp.HiBlockTime
-		if progress.LowBlock > earliest.Number {
-			startTime := time.Unix(earliest.BlockTime, 0).UTC()
+		if progress.LowBlock > processed.LowBlock {
+			startTime := time.Unix(processed.LowBlockTime, 0).UTC()
 			endTime := time.Unix(progress.LowBlockTime, 0).UTC()
 			dp := rejectTransactions(startTime, endTime)
 			progress.LowBlock = dp.LowBlock
@@ -284,14 +295,17 @@ func processTxStatus() {
 		}
 		store.MustGetDBTx().InsertProgress(progress)
 		glog.Infof("updated progress for blocks between %d and %d", progress.HiBlock, progress.LowBlock)
-	} else if progress.LowBlock > earliest.Number {
-		startTime := time.Unix(earliest.BlockTime, 0).UTC()
+	} else if progress.LowBlock > processed.LowBlock {
+		startTime := time.Unix(processed.LowBlockTime, 0).UTC()
 		endTime := time.Unix(progress.LowBlockTime, 0).UTC()
 		dp := rejectTransactions(startTime, endTime)
 		progress.LowBlock = dp.LowBlock
 		progress.LowBlockTime = dp.LowBlockTime
 		store.MustGetDBTx().InsertProgress(progress)
 		glog.Infof("updated progress for blocks between %d and %d", progress.HiBlock, progress.LowBlock)
+	}
+	if err := store.MustGetDBTx().CommitTx(); err != nil {
+		glog.Errorf("Failed to commit db transaction: %s", err.Error())
 	}
 }
 
