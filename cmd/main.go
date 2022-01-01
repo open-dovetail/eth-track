@@ -39,7 +39,7 @@ func init() {
 	flag.IntVar(&config.etherscanDelay, "etherscanDelay", 350, "delay in millis between etherscan API calls")
 	flag.IntVar(&config.blockDelay, "blockDelay", 12, "blockchain height delay for last confirmed block")
 	flag.IntVar(&config.blockBatchSize, "blockBatchSize", 40, "number of blocks to process per db commit")
-	flag.IntVar(&config.statusBatchSize, "statusBatchSize", 100, "number of rejected tx per db insert")
+	flag.IntVar(&config.statusBatchSize, "statusBatchSize", 10, "number of rejected tx per db insert")
 	flag.IntVar(&config.maxBatches, "maxBatches", 100, "max number of batches to process")
 	flag.StringVar(&config.command, "command", "newTx", "newTx or oldTx to decode transactions; or rejectTx to update transaction status")
 	flag.StringVar(&config.dbURL, "dbURL", "http://127.0.0.1:8123", "Etherscan API key")
@@ -361,7 +361,7 @@ func rejectTransactions(startTime, endTime time.Time) *common.Progress {
 			progress.HiBlock = blockNumber
 			progress.HiBlockTime = blockTime.Unix()
 		}
-		if status == 1 {
+		if status == 1 && len(to) > 0 {
 			if state, err := proc.GetTransactionStatus("0x" + hash); err != nil {
 				glog.Errorf("Failed to get transaction status: %s", err.Error())
 			} else if !state {
