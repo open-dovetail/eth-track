@@ -114,7 +114,16 @@ func (c *ClickHouseConnection) Close() error {
 }
 
 func (c *ClickHouseConnection) Query(sql string, args ...interface{}) (*sql.Rows, error) {
-	return c.connection.Query(sql, args...)
+	for retry := 1; retry <= 3; retry++ {
+		if rows, err := c.connection.Query(sql, args...); err != nil {
+			// retry 3 times if query failed
+			glog.Warningf("Failed %d times in query %s: %+v", retry, sql, err)
+			time.Sleep(5 * time.Second)
+		} else {
+			return rows, err
+		}
+	}
+	return nil, errors.Errorf("Failed query for %s", sql)
 }
 
 // if sortHi=true: get the row with highest HiBlock
@@ -269,7 +278,7 @@ func QueryTransactions(startTime, endTime time.Time) (*sql.Rows, error) {
 	return rows, nil
 }
 
-func (t *ClickHouseTransaction) RejectTransaction(to, hash string, blockTime time.Time) error {
+func (t *ClickHouseTransaction) RejectTransaction2(to, hash string, blockTime time.Time) error {
 	// query specified transaction
 	rows, err := db.Query(`
 		SELECT
@@ -443,6 +452,9 @@ func (c *ClickHouseConnection) startTx() (*ClickHouseTransaction, error) {
 		return nil, err
 	}
 	if err := txn.prepareTransactionStmt(); err != nil {
+		return nil, err
+	}
+	if err := txn.prepareRejectTxStmt(); err != nil {
 		return nil, err
 	}
 	if err := txn.prepareLogStmt(); err != nil {
@@ -673,6 +685,70 @@ func (t *ClickHouseTransaction) InsertTransaction(transaction *common.Transactio
 		bigIntToFloat(transaction.Value),
 		clickhouse.UInt64(transaction.Nonce),
 		secondsToDateTime(transaction.BlockTime),
+	)
+	return err
+}
+
+func (t *ClickHouseTransaction) prepareRejectTxStmt() error {
+	if _, ok := t.stmts["reject"]; !ok {
+		stmt, err := t.tx.Prepare(`
+			INSERT INTO transactions (
+				Hash,
+				BlockNumber,
+				TxnIndex,
+				Status,
+				From,
+				To,
+				Method,
+				Params.Name,
+				Params.Seq,
+				Params.ValueString,
+				Params.ValueDouble,
+				GasPrice,
+				Gas,
+				Value,
+				Nonce,
+				BlockTime
+			) SELECT 
+				Hash,
+				BlockNumber,
+				TxnIndex,
+				-1,
+				From,
+				To,
+				Method,
+				Params.Name,
+				Params.Seq,
+				Params.ValueString,
+				Params.ValueDouble,
+				GasPrice,
+				Gas,
+				Value,
+				Nonce,
+				BlockTime
+			FROM transactions
+			WHERE To = ? AND BlockTime = ? AND Hash = ?`)
+		if err != nil {
+			return err
+		}
+		t.stmts["reject"] = stmt
+	}
+	return nil
+}
+
+func (t *ClickHouseTransaction) RejectTransaction(to, hash string, blockTime time.Time) error {
+	txnLock.Lock()
+	defer txnLock.Unlock()
+
+	stmt, ok := t.stmts["reject"]
+	if !ok {
+		return errors.New("rejectTx statement is not prepared for ClickHouse transaction")
+	}
+
+	_, err := stmt.Exec(
+		to,
+		blockTime,
+		hash,
 	)
 	return err
 }
