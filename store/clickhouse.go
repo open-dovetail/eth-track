@@ -114,16 +114,7 @@ func (c *ClickHouseConnection) Close() error {
 }
 
 func (c *ClickHouseConnection) Query(sql string, args ...interface{}) (*sql.Rows, error) {
-	for retry := 1; retry <= 3; retry++ {
-		if rows, err := c.connection.Query(sql, args...); err != nil {
-			// retry 3 times if query failed
-			glog.Warningf("Failed %d times in query %s: %+v", retry, sql, err)
-			time.Sleep(5 * time.Second)
-		} else {
-			return rows, err
-		}
-	}
-	return nil, errors.Errorf("Failed query for %s", sql)
+	return c.connection.Query(sql, args...)
 }
 
 // if sortHi=true: get the row with highest HiBlock
