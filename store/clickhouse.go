@@ -114,7 +114,16 @@ func (c *ClickHouseConnection) Close() error {
 }
 
 func (c *ClickHouseConnection) Query(sql string, args ...interface{}) (*sql.Rows, error) {
-	return c.connection.Query(sql, args...)
+	for retry := 1; retry <= 3; retry++ {
+		if rows, err := c.connection.Query(sql, args...); err != nil {
+			// retry 3 times if query failed
+			glog.Warningf("Failed %d times in query %s: %+v", retry, sql, err)
+			time.Sleep(20 * time.Second)
+		} else {
+			return rows, err
+		}
+	}
+	return nil, errors.Errorf("Failed query for %s", sql)
 }
 
 // if sortHi=true: get the row with highest HiBlock
@@ -723,6 +732,31 @@ func (t *ClickHouseTransaction) prepareRejectTxStmt() error {
 			return err
 		}
 		t.stmts["reject"] = stmt
+	}
+	return nil
+}
+
+func RejectTransactions(to, hash []string) error {
+	if db == nil {
+		return errors.New("Database connection is not initialized")
+	}
+
+	toList := strings.Join(to, "','")
+	hashList := strings.Join(hash, "','")
+	sql := fmt.Sprintf(`
+		INSERT INTO transactions (Hash, BlockNumber, TxnIndex, Status, From, To, 
+			Method, Params.Name, Params.Seq, Params.ValueString, Params.ValueDouble,
+			GasPrice, Gas, Value, Nonce, BlockTime
+		) SELECT Hash, BlockNumber, TxnIndex, -1, From, To,
+			Method, Params.Name, Params.Seq, Params.ValueString, Params.ValueDouble,
+			GasPrice, Gas, Value, Nonce, BlockTime
+		FROM transactions
+		WHERE To IN ('%s') AND Hash IN ('%s')`, toList, hashList)
+	if rows, err := db.Query(sql); err != nil {
+		return errors.Wrapf(err, "Failed to update %d tx status", len(hash))
+	} else {
+		glog.Infof("Rejected %d transactions", len(hash))
+		rows.Close()
 	}
 	return nil
 }

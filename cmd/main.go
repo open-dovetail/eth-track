@@ -16,17 +16,18 @@ import (
 )
 
 type Config struct {
-	nodeURL        string // Ethereum node URL
-	apiKey         string // etherscan API key
-	etherscanDelay int    // delay of consecutive etherscan API invocation in ms
-	blockDelay     int    // blockchain height delay for last confirmed block
-	blockBatchSize int    // number of blocks to process per db commit
-	maxBatches     int    // max number of batches to process
-	command        string // newTx, oldTx, or rejectTx
-	dbURL          string // clickhouse URL
-	dbName         string // clickhouse database name
-	dbUser         string // clickhouse user name
-	dbPassword     string // clickhouse user password
+	nodeURL         string // Ethereum node URL
+	apiKey          string // etherscan API key
+	etherscanDelay  int    // delay of consecutive etherscan API invocation in ms
+	blockDelay      int    // blockchain height delay for last confirmed block
+	blockBatchSize  int    // number of blocks to process per db commit
+	statusBatchSize int    // number of rejected tx per db insert
+	maxBatches      int    // max number of batches to process
+	command         string // newTx, oldTx, or rejectTx
+	dbURL           string // clickhouse URL
+	dbName          string // clickhouse database name
+	dbUser          string // clickhouse user name
+	dbPassword      string // clickhouse user password
 }
 
 var config = &Config{}
@@ -38,6 +39,7 @@ func init() {
 	flag.IntVar(&config.etherscanDelay, "etherscanDelay", 350, "delay in millis between etherscan API calls")
 	flag.IntVar(&config.blockDelay, "blockDelay", 12, "blockchain height delay for last confirmed block")
 	flag.IntVar(&config.blockBatchSize, "blockBatchSize", 40, "number of blocks to process per db commit")
+	flag.IntVar(&config.statusBatchSize, "statusBatchSize", 100, "number of rejected tx per db insert")
 	flag.IntVar(&config.maxBatches, "maxBatches", 100, "max number of batches to process")
 	flag.StringVar(&config.command, "command", "newTx", "newTx or oldTx to decode transactions; or rejectTx to update transaction status")
 	flag.StringVar(&config.dbURL, "dbURL", "http://127.0.0.1:8123", "Etherscan API key")
@@ -325,9 +327,11 @@ func rejectTransactions(startTime, endTime time.Time) *common.Progress {
 	progress := &common.Progress{
 		ProcessID: common.SetStatus,
 	}
-	count := 0
+	// count := 0
 	total := 0
 	iter := 0
+	toArray := make([]string, 0, config.statusBatchSize)
+	hashArray := make([]string, 0, config.statusBatchSize)
 	for rows.Next() {
 		var (
 			to, hash    string
@@ -346,7 +350,7 @@ func rejectTransactions(startTime, endTime time.Time) *common.Progress {
 		}
 		iter++
 		if iter%1000 == 0 {
-			glog.Infof("[%d] %d %d %s %d", iter, count, status, hash, blockNumber)
+			glog.Infof("[%d] %d %d %s %d", iter, len(toArray), status, hash, blockNumber)
 		}
 
 		if progress.LowBlock == 0 || blockNumber < progress.LowBlock {
@@ -364,27 +368,44 @@ func rejectTransactions(startTime, endTime time.Time) *common.Progress {
 				if glog.V(1) {
 					glog.Infof("reject transaction 0x%s", hash)
 				}
-				count++
-				if err := store.MustGetDBTx().RejectTransaction(to, hash, blockTime); err != nil {
-					glog.Errorf("Failed to update transaction status for 0x%s: %+v", hash, err)
-				}
+				// count++
+				toArray = append(toArray, to)
+				hashArray = append(hashArray, hash)
+				// if err := store.MustGetDBTx().RejectTransaction(to, hash, blockTime); err != nil {
+				// 	glog.Errorf("Failed to update transaction status for 0x%s: %+v", hash, err)
+				// }
 			}
 
-			if count > 0 && count%(100*config.blockBatchSize) == 0 {
-				glog.Infof("Rejected %d transactions up to block %d", count, progress.HiBlock)
-				total += count
-				count = 0
-				if err := store.MustGetDBTx().CommitTx(); err != nil {
-					glog.Errorf("Failed to commit db transaction: %s", err.Error())
+			if len(toArray) >= config.statusBatchSize {
+				glog.Infof("Reject %d transactions up to block %d", len(toArray), progress.HiBlock)
+				total += len(toArray)
+				if err := store.RejectTransactions(toArray, hashArray); err != nil {
+					glog.Errorf("Failed to update db for %d rejected transations: %s", len(toArray), err.Error())
 				}
+				toArray = make([]string, 0, config.statusBatchSize)
+				hashArray = make([]string, 0, config.statusBatchSize)
 			}
+			// if count > 0 && count%(100*config.blockBatchSize) == 0 {
+			// 	glog.Infof("Rejected %d transactions up to block %d", count, progress.HiBlock)
+			// 	total += count
+			// 	count = 0
+			// 	if err := store.MustGetDBTx().CommitTx(); err != nil {
+			// 		glog.Errorf("Failed to commit db transaction: %s", err.Error())
+			// 	}
+			// }
 		}
 	}
-	glog.Infof("Rejected %d transactions up to block %d", total+count, progress.HiBlock)
-	if err := store.MustGetDBTx().CommitTx(); err != nil {
-		glog.Errorf("Failed to commit db transaction: %s", err.Error())
+	if len(toArray) > 0 {
+		total += len(toArray)
+		if err := store.RejectTransactions(toArray, hashArray); err != nil {
+			glog.Errorf("Failed to update db for %d rejected transations: %s", len(toArray), err.Error())
+		}
 	}
-
+	glog.Infof("Rejected %d transactions up to block %d", total, progress.HiBlock)
+	// glog.Infof("Rejected %d transactions up to block %d", total+count, progress.HiBlock)
+	// if err := store.MustGetDBTx().CommitTx(); err != nil {
+	// 	glog.Errorf("Failed to commit db transaction: %s", err.Error())
+	// }
 	return progress
 }
 
