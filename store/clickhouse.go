@@ -752,11 +752,10 @@ func RejectTransactions(to, hash []string) error {
 			GasPrice, Gas, Value, Nonce, BlockTime
 		FROM transactions
 		WHERE To IN ('%s') AND Hash IN ('%s')`, toList, hashList)
-	if r, err := db.connection.Exec(sql); err != nil {
+	if _, err := db.connection.Exec(sql); err != nil {
 		return errors.Wrapf(err, "Failed to update %d tx status", len(hash))
 	} else {
-		d, _ := r.RowsAffected()
-		glog.Infof("Rejected %d transactions; affected rows %d", len(hash), d)
+		glog.Infof("Rejected %d transactions", len(hash))
 	}
 	return nil
 }
