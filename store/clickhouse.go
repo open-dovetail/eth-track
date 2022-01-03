@@ -752,12 +752,16 @@ func RejectTransactions(to, hash []string) error {
 			GasPrice, Gas, Value, Nonce, BlockTime
 		FROM transactions
 		WHERE To IN ('%s') AND Hash IN ('%s')`, toList, hashList)
-	if _, err := db.connection.Exec(sql); err != nil {
-		return errors.Wrapf(err, "Failed to update %d tx status", len(hash))
-	} else {
-		glog.Infof("Rejected %d transactions", len(hash))
+	for retry := 1; retry <= 3; retry++ {
+		if _, err := db.connection.Exec(sql); err != nil {
+			glog.Warningf("Failed %d times to update %d rejected status: %+v", retry, len(hash), err)
+			time.Sleep(20 * time.Second)
+		} else {
+			glog.Infof("Rejected %d transactions", len(hash))
+			return nil
+		}
 	}
-	return nil
+	return errors.Errorf("Failed to update %d tx status", len(hash))
 }
 
 func (t *ClickHouseTransaction) RejectTransaction(to, hash string, blockTime time.Time) error {

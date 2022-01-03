@@ -4,6 +4,7 @@ import (
 	"flag"
 	"os"
 	"os/signal"
+	"sync"
 	"time"
 
 	"github.com/golang/glog"
@@ -21,8 +22,9 @@ type Config struct {
 	etherscanDelay  int    // delay of consecutive etherscan API invocation in ms
 	blockDelay      int    // blockchain height delay for last confirmed block
 	blockBatchSize  int    // number of blocks to process per db commit
-	statusBatchSize int    // number of rejected tx per db insert
 	maxBatches      int    // max number of batches to process
+	statusBatchSize int    // number of rejected tx per db insert
+	statusIntHours  int    // interval hours for updating tx status
 	command         string // newTx, oldTx, or rejectTx
 	dbURL           string // clickhouse URL
 	dbName          string // clickhouse database name
@@ -39,8 +41,9 @@ func init() {
 	flag.IntVar(&config.etherscanDelay, "etherscanDelay", 350, "delay in millis between etherscan API calls")
 	flag.IntVar(&config.blockDelay, "blockDelay", 12, "blockchain height delay for last confirmed block")
 	flag.IntVar(&config.blockBatchSize, "blockBatchSize", 40, "number of blocks to process per db commit")
-	flag.IntVar(&config.statusBatchSize, "statusBatchSize", 100, "number of rejected tx per db insert")
 	flag.IntVar(&config.maxBatches, "maxBatches", 100, "max number of batches to process")
+	flag.IntVar(&config.statusBatchSize, "statusBatchSize", 100, "number of rejected tx per db insert")
+	flag.IntVar(&config.statusIntHours, "statusIntHours", 12, "interval hours per thread for updating tx status")
 	flag.StringVar(&config.command, "command", "newTx", "newTx or oldTx to decode transactions; or rejectTx to update transaction status")
 	flag.StringVar(&config.dbURL, "dbURL", "http://127.0.0.1:8123", "Etherscan API key")
 	flag.StringVar(&config.dbName, "dbName", "ethdb", "Etherscan API key")
@@ -139,7 +142,7 @@ func main() {
 
 	store.MustGetDBTx().CommitTx()
 	if err := store.GetDBConnection().Close(); err != nil {
-		glog.Errorf("Failed to close db connection: %4", err.Error())
+		glog.Errorf("Failed to close db connection: %s", err.Error())
 	}
 	glog.Flush()
 }
@@ -253,7 +256,8 @@ func processNewBlocks() {
 }
 
 // check transaction status, and remove rejected transactions
-func processTxStatus() {
+// implementation using single thread; this is too slow.
+func processTxStatus2() {
 	glog.Info("Check transaction status ...")
 	processed, _ := store.QueryProgress(common.AddTransaction, true)
 	if processed != nil {
@@ -313,6 +317,119 @@ func processTxStatus() {
 	if err := store.MustGetDBTx().CommitTx(); err != nil {
 		glog.Errorf("Failed to commit db transaction: %s", err.Error())
 	}
+}
+
+func processTxStatus() {
+	glog.Info("Check transaction status ...")
+	intervals, progress := txStatusIntervals()
+	if len(intervals) == 0 {
+		glog.Warning("No new processed transactions, so do nothing")
+		time.Sleep(120 * time.Second)
+		return
+	}
+
+	// update status using multiple threads
+	var wg sync.WaitGroup
+	for _, v := range intervals {
+		wg.Add(1)
+		go func(val timeInterval) {
+			rejectTransactions(val.startTime, val.endTime)
+			glog.Infof("updated transactions in period %s %s", val.startTime, val.endTime)
+			wg.Done()
+		}(v)
+	}
+	wg.Wait()
+
+	if err := store.MustGetDBTx().InsertProgress(progress); err != nil {
+		glog.Errorf("Failed to update status progress: %s", err.Error())
+		return
+	}
+	glog.Infof("updated progress for blocks between %d and %d", progress.HiBlock, progress.LowBlock)
+
+	if err := store.MustGetDBTx().CommitTx(); err != nil {
+		glog.Errorf("Failed to commit db transaction: %s", err.Error())
+	}
+}
+
+type timeInterval struct {
+	startTime time.Time
+	endTime   time.Time
+}
+
+// split time interval into intervals of config.statusIntHours
+func intervalSlice(startTime, endTime time.Time) []timeInterval {
+	var intervals []timeInterval
+	lowTime := startTime
+	for lowTime.Before(endTime) {
+		upTime := lowTime.Add(time.Duration(config.statusIntHours) * time.Hour)
+		if endTime.Before(upTime) {
+			upTime = endTime
+		}
+		intervals = append(intervals, timeInterval{
+			startTime: lowTime,
+			endTime:   upTime,
+		})
+		lowTime = upTime
+	}
+	return intervals
+}
+
+// return slice of time intervals for tx status check
+func txStatusIntervals() ([]timeInterval, *common.Progress) {
+	var intervals []timeInterval
+	processed, _ := store.QueryProgress(common.AddTransaction, true)
+	if processed != nil {
+		lowProcessed, _ := store.QueryProgress(common.AddTransaction, false)
+		if lowProcessed.LowBlock < processed.LowBlock {
+			processed.LowBlock = lowProcessed.LowBlock
+			processed.LowBlockTime = lowProcessed.LowBlockTime
+		}
+	} else {
+		// no transaction processed
+		return intervals, nil
+	}
+	progress, _ := store.QueryProgress(common.SetStatus, true)
+	if progress != nil {
+		lowProgress, _ := store.QueryProgress(common.SetStatus, false)
+		if lowProgress.LowBlock < progress.LowBlock {
+			progress.LowBlock = lowProgress.LowBlock
+			progress.LowBlockTime = lowProgress.LowBlockTime
+		}
+	}
+	if progress == nil {
+		// first time for processing tx status
+		startTime := time.Unix(processed.LowBlockTime, 0).UTC()
+		endTime := time.Unix(processed.HiBlockTime, 0).UTC().Add(time.Second)
+		intervals = intervalSlice(startTime, endTime)
+		progress = &common.Progress{
+			ProcessID:    common.SetStatus,
+			LowBlock:     processed.LowBlock,
+			LowBlockTime: processed.LowBlockTime,
+			HiBlock:      processed.HiBlock,
+			HiBlockTime:  processed.HiBlockTime,
+		}
+	} else if progress.HiBlock < processed.HiBlock {
+		startTime := time.Unix(progress.HiBlockTime, 0).UTC().Add(time.Second)
+		endTime := time.Unix(processed.HiBlockTime, 0).UTC().Add(time.Second)
+		intervals = intervalSlice(startTime, endTime)
+		progress.HiBlock = processed.HiBlock
+		progress.HiBlockTime = processed.HiBlockTime
+		if progress.LowBlock > processed.LowBlock {
+			startTime := time.Unix(processed.LowBlockTime, 0).UTC()
+			endTime := time.Unix(progress.LowBlockTime, 0).UTC()
+			v := intervalSlice(startTime, endTime)
+			intervals = append(intervals, v...)
+			progress.LowBlock = processed.LowBlock
+			progress.LowBlockTime = processed.LowBlockTime
+		}
+	} else if progress.LowBlock > processed.LowBlock {
+		startTime := time.Unix(processed.LowBlockTime, 0).UTC()
+		endTime := time.Unix(progress.LowBlockTime, 0).UTC()
+		intervals = intervalSlice(startTime, endTime)
+		progress.LowBlock = processed.LowBlock
+		progress.LowBlockTime = processed.LowBlockTime
+	}
+	return intervals, progress
 }
 
 // update transaction status for all transactions in a specified time range
