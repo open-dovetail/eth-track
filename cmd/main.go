@@ -140,7 +140,6 @@ func main() {
 		glog.Fatalf("command '%s' is not supported", config.command)
 	}
 
-	store.MustGetDBTx().CommitTx()
 	if err := store.GetDBConnection().Close(); err != nil {
 		glog.Errorf("Failed to close db connection: %s", err.Error())
 	}
@@ -211,6 +210,9 @@ func processOldBlocks() {
 	}
 	store.MustGetDBTx().InsertProgress(progress)
 	glog.Infof("updated progress for blocks between %d and %d", progress.HiBlock, progress.LowBlock)
+	if err := store.MustGetDBTx().CommitTx(); err != nil {
+		glog.Errorf("Failed to commit old blocks: %+v", err)
+	}
 }
 
 // process blocks newer than the most recent block in db
@@ -252,73 +254,13 @@ func processNewBlocks() {
 			store.MustGetDBTx().InsertProgress(progress)
 			glog.Infof("updated progress for blocks between %d and %d", progress.HiBlock, progress.LowBlock)
 		}
+		if err := store.MustGetDBTx().CommitTx(); err != nil {
+			glog.Errorf("Failed to commit new blocks: %+v", err)
+		}
 	}
 }
 
 // check transaction status, and remove rejected transactions
-// implementation using single thread; this is too slow.
-func processTxStatus2() {
-	glog.Info("Check transaction status ...")
-	processed, _ := store.QueryProgress(common.AddTransaction, true)
-	if processed != nil {
-		lowProcessed, _ := store.QueryProgress(common.AddTransaction, false)
-		if lowProcessed.LowBlock < processed.LowBlock {
-			processed.LowBlock = lowProcessed.LowBlock
-			processed.LowBlockTime = lowProcessed.LowBlockTime
-		}
-	} else {
-		glog.Warning("No transaction is collected, so do nothing")
-		time.Sleep(120 * time.Second)
-		return
-	}
-	progress, _ := store.QueryProgress(common.SetStatus, true)
-	if progress != nil {
-		lowProgress, _ := store.QueryProgress(common.SetStatus, false)
-		if lowProgress.LowBlock < progress.LowBlock {
-			progress.LowBlock = lowProgress.LowBlock
-			progress.LowBlockTime = lowProgress.LowBlockTime
-		}
-	}
-	if progress == nil {
-		// first time for processing tx status
-		startTime := time.Unix(processed.LowBlockTime, 0).UTC()
-		endTime := time.Unix(processed.HiBlockTime, 0).UTC().Add(time.Second)
-		progress = rejectTransactions(startTime, endTime)
-		store.MustGetDBTx().InsertProgress(progress)
-		glog.Infof("updated progress for blocks between %d and %d", progress.HiBlock, progress.LowBlock)
-	} else if progress.HiBlock < processed.HiBlock {
-		startTime := time.Unix(progress.HiBlockTime, 0).UTC().Add(time.Second)
-		endTime := time.Unix(processed.HiBlockTime, 0).UTC().Add(time.Second)
-		dp := rejectTransactions(startTime, endTime)
-		progress.HiBlock = dp.HiBlock
-		progress.HiBlockTime = dp.HiBlockTime
-		if progress.LowBlock > processed.LowBlock {
-			startTime := time.Unix(processed.LowBlockTime, 0).UTC()
-			endTime := time.Unix(progress.LowBlockTime, 0).UTC()
-			dp := rejectTransactions(startTime, endTime)
-			progress.LowBlock = dp.LowBlock
-			progress.LowBlockTime = dp.LowBlockTime
-		}
-		store.MustGetDBTx().InsertProgress(progress)
-		glog.Infof("updated progress for blocks between %d and %d", progress.HiBlock, progress.LowBlock)
-	} else if progress.LowBlock > processed.LowBlock {
-		startTime := time.Unix(processed.LowBlockTime, 0).UTC()
-		endTime := time.Unix(progress.LowBlockTime, 0).UTC()
-		dp := rejectTransactions(startTime, endTime)
-		progress.LowBlock = dp.LowBlock
-		progress.LowBlockTime = dp.LowBlockTime
-		store.MustGetDBTx().InsertProgress(progress)
-		glog.Infof("updated progress for blocks between %d and %d", progress.HiBlock, progress.LowBlock)
-	} else {
-		glog.Warning("No new transaction for status check, so do nothing")
-		time.Sleep(120 * time.Second)
-		return
-	}
-	if err := store.MustGetDBTx().CommitTx(); err != nil {
-		glog.Errorf("Failed to commit db transaction: %s", err.Error())
-	}
-}
-
 func processTxStatus() {
 	glog.Info("Check transaction status ...")
 	intervals, progress := txStatusIntervals()
@@ -347,7 +289,7 @@ func processTxStatus() {
 	glog.Infof("updated progress for blocks between %d and %d", progress.HiBlock, progress.LowBlock)
 
 	if err := store.MustGetDBTx().CommitTx(); err != nil {
-		glog.Errorf("Failed to commit db transaction: %s", err.Error())
+		glog.Errorf("Failed to commit status updates: %+v", err)
 	}
 }
 
@@ -433,18 +375,13 @@ func txStatusIntervals() ([]timeInterval, *common.Progress) {
 }
 
 // update transaction status for all transactions in a specified time range
-// return progress of scanned blocks
-func rejectTransactions(startTime, endTime time.Time) *common.Progress {
+func rejectTransactions(startTime, endTime time.Time) {
 	rows, err := store.QueryTransactions(startTime, endTime)
 	if err != nil {
 		glog.Fatalf("Failed query transactions between %s and %s: %+v", startTime, endTime, err)
 	}
-
 	defer rows.Close()
-	progress := &common.Progress{
-		ProcessID: common.SetStatus,
-	}
-	// count := 0
+
 	total := 0
 	iter := 0
 	toArray := make([]string, 0, config.statusBatchSize)
@@ -469,15 +406,6 @@ func rejectTransactions(startTime, endTime time.Time) *common.Progress {
 		if iter%1000 == 0 {
 			glog.Infof("[%d] %d %d %s %d", iter, len(toArray), status, hash, blockNumber)
 		}
-
-		if progress.LowBlock == 0 || blockNumber < progress.LowBlock {
-			progress.LowBlock = blockNumber
-			progress.LowBlockTime = blockTime.Unix()
-		}
-		if progress.HiBlock == 0 || blockNumber > progress.HiBlock {
-			progress.HiBlock = blockNumber
-			progress.HiBlockTime = blockTime.Unix()
-		}
 		if status == 1 && len(to) > 0 {
 			if state, err := proc.GetTransactionStatus("0x" + hash); err != nil {
 				glog.Errorf("Failed to get transaction status: %s", err.Error())
@@ -485,16 +413,12 @@ func rejectTransactions(startTime, endTime time.Time) *common.Progress {
 				if glog.V(1) {
 					glog.Infof("reject transaction 0x%s", hash)
 				}
-				// count++
 				toArray = append(toArray, to)
 				hashArray = append(hashArray, hash)
-				// if err := store.MustGetDBTx().RejectTransaction(to, hash, blockTime); err != nil {
-				// 	glog.Errorf("Failed to update transaction status for 0x%s: %+v", hash, err)
-				// }
 			}
 
 			if len(toArray) >= config.statusBatchSize {
-				glog.Infof("Reject %d transactions up to block %d", len(toArray), progress.HiBlock)
+				glog.Infof("Reject %d transactions including block %d", len(toArray), blockNumber)
 				total += len(toArray)
 				if err := store.RejectTransactions(toArray, hashArray); err != nil {
 					glog.Errorf("Failed to update db for %d rejected transations: %s", len(toArray), err.Error())
@@ -502,14 +426,6 @@ func rejectTransactions(startTime, endTime time.Time) *common.Progress {
 				toArray = make([]string, 0, config.statusBatchSize)
 				hashArray = make([]string, 0, config.statusBatchSize)
 			}
-			// if count > 0 && count%(100*config.blockBatchSize) == 0 {
-			// 	glog.Infof("Rejected %d transactions up to block %d", count, progress.HiBlock)
-			// 	total += count
-			// 	count = 0
-			// 	if err := store.MustGetDBTx().CommitTx(); err != nil {
-			// 		glog.Errorf("Failed to commit db transaction: %s", err.Error())
-			// 	}
-			// }
 		}
 	}
 	if len(toArray) > 0 {
@@ -518,12 +434,7 @@ func rejectTransactions(startTime, endTime time.Time) *common.Progress {
 			glog.Errorf("Failed to update db for %d rejected transations: %s", len(toArray), err.Error())
 		}
 	}
-	glog.Infof("Rejected %d transactions up to block %d", total, progress.HiBlock)
-	// glog.Infof("Rejected %d transactions up to block %d", total+count, progress.HiBlock)
-	// if err := store.MustGetDBTx().CommitTx(); err != nil {
-	// 	glog.Errorf("Failed to commit db transaction: %s", err.Error())
-	// }
-	return progress
+	glog.Infof("Rejected %d transactions in period [%s, %s)", total, startTime, endTime)
 }
 
 // process missing blocks between recorded top blocks and HiBlock in grogress table
@@ -562,6 +473,9 @@ func fillBlockGap(latest *common.Block) {
 		progress.HiBlock = latest.Number
 		progress.HiBlockTime = latest.BlockTime
 		store.MustGetDBTx().InsertProgress(progress)
+	}
+	if err := store.MustGetDBTx().CommitTx(); err != nil {
+		glog.Errorf("Failed to commit gap transactions: %+v", err)
 	}
 }
 

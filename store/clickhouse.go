@@ -278,95 +278,6 @@ func QueryTransactions(startTime, endTime time.Time) (*sql.Rows, error) {
 	return rows, nil
 }
 
-func (t *ClickHouseTransaction) RejectTransaction2(to, hash string, blockTime time.Time) error {
-	// query specified transaction
-	rows, err := db.Query(`
-		SELECT
-			BlockNumber,
-			TxnIndex,
-			Status,
-			From,
-			Method,
-			Params.Name,
-			Params.Seq,
-			Params.ValueString,
-			Params.ValueDouble,
-			GasPrice,
-			Gas,
-			Value,
-			Nonce
-		FROM transactions
-		WHERE To = ? AND BlockTime = ? AND Hash = ?`, to, blockTime, hash)
-	if err != nil {
-		return errors.Wrapf(err, "Failed to query transaction 0x%s", hash)
-	}
-
-	// fetch and update the first row in the resultset
-	defer rows.Close()
-	if rows.Next() {
-		var (
-			blockNumber, txnIndex, gasPrice, gas, nonce uint64
-			status                                      int8
-			value                                       float64
-			from, method                                string
-			paramNames, paramStrings                    []string
-			paramSeqs                                   []int8
-			paramDoubles                                []float64
-		)
-
-		if err = rows.Scan(
-			&blockNumber,
-			&txnIndex,
-			&status,
-			&from,
-			&method,
-			&paramNames,
-			&paramSeqs,
-			&paramStrings,
-			&paramDoubles,
-			&gasPrice,
-			&gas,
-			&value,
-			&nonce,
-		); err != nil {
-			return errors.Wrapf(err, "Failed to parse query result for transaction 0x%s", hash)
-		}
-
-		// update transaction status with all other values unchanged
-		txnLock.Lock()
-		defer txnLock.Unlock()
-
-		stmt, ok := t.stmts["transaction"]
-		if !ok {
-			return errors.New("transaction statement is not prepared for ClickHouse transaction")
-		}
-
-		_, err = stmt.Exec(
-			hash,
-			clickhouse.UInt64(blockNumber),
-			clickhouse.UInt64(txnIndex),
-			int8(-1),
-			from,
-			to,
-			method,
-			clickhouse.Array(paramNames),
-			clickhouse.Array(paramSeqs),
-			clickhouse.Array(paramStrings),
-			clickhouse.Array(paramDoubles),
-			clickhouse.UInt64(gasPrice),
-			clickhouse.UInt64(gas),
-			value,
-			clickhouse.UInt64(nonce),
-			blockTime,
-		)
-		if glog.V(2) {
-			glog.Infof("Reject transaction 0x%s at block time %s", hash, blockTime)
-		}
-	}
-
-	return err
-}
-
 func QueryContract(address string) (*common.Contract, error) {
 	if db == nil {
 		return nil, errors.New("Database connection is not initialized")
@@ -452,9 +363,6 @@ func (c *ClickHouseConnection) startTx() (*ClickHouseTransaction, error) {
 		return nil, err
 	}
 	if err := txn.prepareTransactionStmt(); err != nil {
-		return nil, err
-	}
-	if err := txn.prepareRejectTxStmt(); err != nil {
 		return nil, err
 	}
 	if err := txn.prepareLogStmt(); err != nil {
@@ -689,53 +597,6 @@ func (t *ClickHouseTransaction) InsertTransaction(transaction *common.Transactio
 	return err
 }
 
-func (t *ClickHouseTransaction) prepareRejectTxStmt() error {
-	if _, ok := t.stmts["reject"]; !ok {
-		stmt, err := t.tx.Prepare(`
-			INSERT INTO transactions (
-				Hash,
-				BlockNumber,
-				TxnIndex,
-				Status,
-				From,
-				To,
-				Method,
-				Params.Name,
-				Params.Seq,
-				Params.ValueString,
-				Params.ValueDouble,
-				GasPrice,
-				Gas,
-				Value,
-				Nonce,
-				BlockTime
-			) SELECT 
-				Hash,
-				BlockNumber,
-				TxnIndex,
-				-1,
-				From,
-				To,
-				Method,
-				Params.Name,
-				Params.Seq,
-				Params.ValueString,
-				Params.ValueDouble,
-				GasPrice,
-				Gas,
-				Value,
-				Nonce,
-				BlockTime
-			FROM transactions
-			WHERE To = ? AND BlockTime = ? AND Hash = ?`)
-		if err != nil {
-			return err
-		}
-		t.stmts["reject"] = stmt
-	}
-	return nil
-}
-
 func RejectTransactions(to, hash []string) error {
 	if db == nil {
 		return errors.New("Database connection is not initialized")
@@ -762,23 +623,6 @@ func RejectTransactions(to, hash []string) error {
 		}
 	}
 	return errors.Errorf("Failed to update %d tx status", len(hash))
-}
-
-func (t *ClickHouseTransaction) RejectTransaction(to, hash string, blockTime time.Time) error {
-	txnLock.Lock()
-	defer txnLock.Unlock()
-
-	stmt, ok := t.stmts["reject"]
-	if !ok {
-		return errors.New("rejectTx statement is not prepared for ClickHouse transaction")
-	}
-
-	_, err := stmt.Exec(
-		to,
-		blockTime,
-		hash,
-	)
-	return err
 }
 
 func (t *ClickHouseTransaction) prepareLogStmt() error {
