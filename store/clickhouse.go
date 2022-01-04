@@ -118,7 +118,7 @@ func (c *ClickHouseConnection) Query(sql string, args ...interface{}) (*sql.Rows
 		if rows, err := c.connection.Query(sql, args...); err != nil {
 			// retry 3 times if query failed
 			glog.Warningf("Failed %d times in query %s: %+v", retry, sql, err)
-			time.Sleep(20 * time.Second)
+			time.Sleep(30 * time.Second)
 		} else {
 			return rows, err
 		}
