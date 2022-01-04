@@ -115,6 +115,10 @@ func main() {
 		glog.Fatalf("Failed initialization: %+v", err)
 	}
 
+	if config.command != "rejectTx" {
+		proc.CacheContracts(30)
+	}
+
 	if config.command == "oldTx" {
 		processOldBlocks()
 	} else if config.command == "newTx" {

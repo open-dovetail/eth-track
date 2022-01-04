@@ -1,8 +1,6 @@
 package proc
 
 import (
-	"encoding/hex"
-
 	"github.com/golang/glog"
 	"github.com/open-dovetail/eth-track/common"
 	web3 "github.com/umbracle/go-web3"
@@ -10,7 +8,7 @@ import (
 
 func DecodeEventLog(wlog *web3.Log, blockTime int64) *common.EventLog {
 	if glog.V(2) {
-		glog.Infoln("Log:", wlog.LogIndex, len(wlog.Topics), wlog.Topics[0].String(), wlog.Address.String(), hex.EncodeToString(wlog.Data))
+		glog.Infoln("Log:", wlog.LogIndex, len(wlog.Topics), wlog.Address.String())
 	}
 	result := &common.EventLog{
 		BlockNumber: wlog.BlockNumber,

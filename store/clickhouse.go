@@ -278,6 +278,32 @@ func QueryTransactions(startTime, endTime time.Time) (*sql.Rows, error) {
 	return rows, nil
 }
 
+func QueryContracts(recentDays int) (*sql.Rows, error) {
+	if db == nil {
+		return nil, errors.New("Database connection is not initialized")
+	}
+	glog.Infoln("query contracts used in recent %d days", recentDays)
+	evtDt := time.Now().Add(time.Duration(-recentDays*24) * time.Hour)
+	rows, err := db.Query(`
+		SELECT
+			Address,
+			Name,
+			Symbol,
+			Decimals,
+			TotalSupply,
+			UpdatedDate,
+			StartEventDate,
+			LastEventDate,
+			LastErrorTime,
+			ABI
+		FROM contracts
+		WHERE LastEventDate > ?`, evtDt)
+	if err != nil {
+		return nil, errors.Wrapf(err, "Failed to query contracts used in date after %s", evtDt)
+	}
+	return rows, nil
+}
+
 func QueryContract(address string) (*common.Contract, error) {
 	if db == nil {
 		return nil, errors.New("Database connection is not initialized")

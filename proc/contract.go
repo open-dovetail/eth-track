@@ -2,6 +2,7 @@ package proc
 
 import (
 	"encoding/hex"
+	"math/big"
 
 	"sync"
 	"time"
@@ -77,6 +78,57 @@ func GetContract(address string, blockTime int64) (*common.Contract, error) {
 
 	// create new contract
 	return NewContract(address, blockTime)
+}
+
+// query and cache contracts used in recent days -- used when restart the decode engine
+func CacheContracts(days int) error {
+	rows, err := store.QueryContracts(days)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	iter := 0
+	for rows.Next() {
+		contract := &common.Contract{}
+
+		var totalSupply float64
+		var updatedTime, startEventTime, lastEventTime, lastErrorTime time.Time
+
+		if err := rows.Scan(
+			&contract.Address,
+			&contract.Name,
+			&contract.Symbol,
+			&contract.Decimals,
+			&totalSupply,
+			&updatedTime,
+			&startEventTime,
+			&lastEventTime,
+			&lastErrorTime,
+			&contract.ABI,
+		); err != nil {
+			glog.Errorf("Failed to parse query result for contract: %+v", err)
+		}
+
+		iter++
+		if iter%1000 == 0 {
+			glog.Infof("cache contract [%d] %s", iter, contract.Address)
+		}
+
+		contract.Address = "0x" + contract.Address
+		bf := big.NewFloat(totalSupply)
+		v, _ := bf.Int(nil)
+		contract.TotalSupply = v
+		contract.UpdatedTime = updatedTime.Unix()
+		contract.StartEventTime = startEventTime.Unix()
+		contract.LastEventTime = lastEventTime.Unix()
+		contract.LastErrorTime = lastErrorTime.Unix()
+		contractCache[contract.Address] = contract
+		if len(contract.ABI) > 0 {
+			ParseABI(contract)
+		}
+	}
+	return nil
 }
 
 func setContractEventTime(contract *common.Contract, blockTime int64) {
