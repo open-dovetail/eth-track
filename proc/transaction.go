@@ -1,7 +1,6 @@
 package proc
 
 import (
-	"encoding/hex"
 	"time"
 
 	"github.com/golang/glog"
@@ -12,7 +11,7 @@ import (
 
 func DecodeTransaction(tx *web3.Transaction, blockTime int64) *common.Transaction {
 	if glog.V(2) {
-		glog.Infoln("Decode transaction:", tx.TxnIndex, tx.From.String(), tx.To.String(), tx.Value, tx.Hash.String(), hex.EncodeToString(tx.Input))
+		glog.Infoln("Decode transaction:", tx.BlockNumber, tx.TxnIndex, tx.From.String(), tx.Value, tx.Hash.String())
 	}
 	result := &common.Transaction{
 		Hash:        tx.Hash.String(),
