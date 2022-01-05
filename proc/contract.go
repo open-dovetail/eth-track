@@ -312,7 +312,7 @@ func DecodeTransactionInput(input []byte, address string, blockTime int64) (*Dec
 		glog.Infof("decode contract %s method %s tx data %s", address, methodID, hex.EncodeToString(input))
 		glog.Flush()
 	}
-	data, err := abi.Decode(method.Inputs, input[4:])
+	data, err := SafeAbiDecode(method.Inputs, input[4:])
 	if err != nil {
 		return nil, err
 	}
@@ -333,6 +333,17 @@ func DecodeTransactionInput(input []byte, address string, blockTime int64) (*Dec
 		})
 	}
 	return dec, nil
+}
+
+// catch panic from abi decoder
+func SafeAbiDecode(t *abi.Type, input []byte) (data interface{}, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			data = nil
+			err = r.(error)
+		}
+	}()
+	return abi.Decode(t, input)
 }
 
 func DecodeEventData(wlog *web3.Log, blockTime int64) (*DecodedData, error) {
