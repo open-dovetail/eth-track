@@ -198,6 +198,12 @@ func processOldBlocks() {
 	}
 	glog.Infof("start processing earlier blocks from %d - %s for %d batches", earliest.Number, earliest.ParentHash.String(), config.maxBatches)
 	lastBlock := batchLoop(earliest, nil, config.maxBatches)
+	if lastBlock == nil {
+		// no block processed
+		return
+	}
+
+	// update progress
 	progress, _ := store.QueryProgress(common.AddTransaction, true)
 	if progress != nil {
 		progress.LowBlock = lastBlock.Number
@@ -212,8 +218,11 @@ func processOldBlocks() {
 			LowBlockTime: lastBlock.BlockTime,
 		}
 	}
-	store.MustGetDBTx().InsertProgress(progress)
-	glog.Infof("updated progress for blocks between %d and %d", progress.HiBlock, progress.LowBlock)
+	glog.Infof("update progress to blocks between %d and %d", progress.HiBlock, progress.LowBlock)
+	if err := store.MustGetDBTx().InsertProgress(progress); err != nil {
+		glog.Errorf("Failed to update progress: %+v", err)
+		return
+	}
 	if err := store.MustGetDBTx().CommitTx(); err != nil {
 		glog.Errorf("Failed to commit old blocks: %+v", err)
 	}
@@ -236,30 +245,40 @@ func processNewBlocks() {
 			glog.Infof("start processing from the latest confirmed block %d", block.Number)
 		}
 		lastBlock := batchLoop(block, latest, config.maxBatches)
+		if lastBlock == nil {
+			// no block processed
+			return
+		}
+
+		// update progress
+		var progress *common.Progress
 		if latest == nil {
-			progress := &common.Progress{
+			progress = &common.Progress{
 				ProcessID:    common.AddTransaction,
 				HiBlock:      block.Number,
 				HiBlockTime:  block.BlockTime,
 				LowBlock:     lastBlock.Number,
 				LowBlockTime: lastBlock.BlockTime,
 			}
-			store.MustGetDBTx().InsertProgress(progress)
-			glog.Infof("updated progress for blocks between %d and %d", progress.HiBlock, progress.LowBlock)
 		} else if latest.Number+1 >= lastBlock.Number {
 			earliest, _ := store.QueryBlock(0, false)
-			progress := &common.Progress{
+			progress = &common.Progress{
 				ProcessID:    common.AddTransaction,
 				HiBlock:      block.Number,
 				HiBlockTime:  block.BlockTime,
 				LowBlock:     earliest.Number,
 				LowBlockTime: earliest.BlockTime,
 			}
-			store.MustGetDBTx().InsertProgress(progress)
-			glog.Infof("updated progress for blocks between %d and %d", progress.HiBlock, progress.LowBlock)
 		}
-		if err := store.MustGetDBTx().CommitTx(); err != nil {
-			glog.Errorf("Failed to commit new blocks: %+v", err)
+		if progress != nil {
+			glog.Infof("update progress to blocks between %d and %d", progress.HiBlock, progress.LowBlock)
+			if err := store.MustGetDBTx().InsertProgress(progress); err != nil {
+				glog.Errorf("Failed to update progress: %+v", err)
+				return
+			}
+			if err := store.MustGetDBTx().CommitTx(); err != nil {
+				glog.Errorf("Failed to commit new blocks: %+v", err)
+			}
 		}
 	}
 }
@@ -463,20 +482,19 @@ func fillBlockGap(latest *common.Block) {
 		glog.Infof("start filling block gap between %d and %d", gap.Number, progress.HiBlock)
 		hiBlock, _ := proc.GetBlockByNumber(progress.HiBlock)
 		lastBlock := batchLoop(gap, hiBlock, 0)
-		if lastBlock != nil && progress.HiBlock+1 >= lastBlock.Number {
-			// gap filled, so update progress
-			progress.HiBlock = latest.Number
-			progress.HiBlockTime = latest.BlockTime
-			store.MustGetDBTx().InsertProgress(progress)
-		} else {
+		if lastBlock == nil || lastBlock.Number > progress.HiBlock+1 {
 			// unexpected early exit of gap-filling loop
 			glog.Fatalf("gap between %d and %d is not filled", progress.HiBlock, lastBlock.Number)
 		}
-	} else {
-		// no gap, so update progress
-		progress.HiBlock = latest.Number
-		progress.HiBlockTime = latest.BlockTime
-		store.MustGetDBTx().InsertProgress(progress)
+	}
+
+	// gap filled, so update progress
+	progress.HiBlock = latest.Number
+	progress.HiBlockTime = latest.BlockTime
+	glog.Infof("update progress to HiBlock %d, LowBlock %d", progress.HiBlock, progress.LowBlock)
+	if err := store.MustGetDBTx().InsertProgress(progress); err != nil {
+		glog.Errorf("Failed to update progress: %+v", err)
+		return
 	}
 	if err := store.MustGetDBTx().CommitTx(); err != nil {
 		glog.Errorf("Failed to commit gap transactions: %+v", err)
