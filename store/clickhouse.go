@@ -316,6 +316,7 @@ func QueryContract(address string) (*common.Contract, error) {
 		WHERE Address = ?`, address[2:])
 
 	if err != nil {
+		glog.Warningf("Query for contract %s returned error %s", address, err.Error())
 		return nil, errors.Wrapf(err, "Failed to query contract %s", address)
 	}
 
