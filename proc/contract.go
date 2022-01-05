@@ -310,6 +310,7 @@ func DecodeTransactionInput(input []byte, address string, blockTime int64) (*Dec
 
 	if glog.V(2) {
 		glog.Infof("decode contract %s method %s tx data %s", address, methodID, hex.EncodeToString(input))
+		glog.Flush()
 	}
 	data, err := abi.Decode(method.Inputs, input[4:])
 	if err != nil {
