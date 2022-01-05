@@ -284,20 +284,12 @@ func QueryContracts(recentDays int) (*sql.Rows, error) {
 	}
 	glog.Infoln("query contracts used in recent %d days", recentDays)
 	evtDt := time.Now().Add(time.Duration(-recentDays*24) * time.Hour)
-	rows, err := db.Query(`
-		SELECT
-			Address,
-			Name,
-			Symbol,
-			Decimals,
-			TotalSupply,
-			UpdatedDate,
-			StartEventDate,
-			LastEventDate,
-			LastErrorTime,
-			ABI
+	sql := fmt.Sprintf(`SELECT
+			Address, Name, Symbol, Decimals, TotalSupply, UpdatedDate,
+			StartEventDate, LastEventDate, LastErrorTime, ABI
 		FROM contracts
-		WHERE LastEventDate > ?`, evtDt)
+		WHERE LastEventDate > '%s'`, evtDt.Format("2006-01-02"))
+	rows, err := db.Query(sql)
 	if err != nil {
 		return nil, errors.Wrapf(err, "Failed to query contracts used in date after %s", evtDt)
 	}
