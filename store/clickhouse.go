@@ -397,8 +397,18 @@ func (t *ClickHouseTransaction) CommitTx() error {
 	txnLock.Lock()
 	defer txnLock.Unlock()
 
-	err := t.tx.Commit()
-	txn = nil
+	var err error
+	for retry := 1; retry <= 10; retry++ {
+		if err = t.tx.Commit(); err != nil {
+			// retry and wait for db reconnect after AWS issue
+			glog.Warningf("Failed %d times to commit db transaction: %+v", retry, err)
+			time.Sleep(time.Duration(20*retry) * time.Second)
+		} else {
+			txn = nil
+			return nil
+		}
+	}
+	glog.Fatalf("Failed to commit db transaction: %+v", err)
 	return err
 }
 
@@ -632,16 +642,20 @@ func RejectTransactions(to, hash []string) error {
 			GasPrice, Gas, Value, Nonce, BlockTime
 		FROM transactions
 		WHERE To IN ('%s') AND Hash IN ('%s')`, toList, hashList)
-	for retry := 1; retry <= 3; retry++ {
-		if _, err := db.connection.Exec(sql); err != nil {
+
+	var err error
+	for retry := 1; retry <= 10; retry++ {
+		if _, err = db.connection.Exec(sql); err != nil {
+			// retry and wait for db reconnect after AWS issue
 			glog.Warningf("Failed %d times to update %d rejected status: %+v", retry, len(hash), err)
-			time.Sleep(20 * time.Second)
+			time.Sleep(time.Duration(20*retry) * time.Second)
 		} else {
 			glog.Infof("Rejected %d transactions", len(hash))
 			return nil
 		}
 	}
-	return errors.Errorf("Failed to update %d tx status", len(hash))
+	glog.Fatalf("Failed to update tx status: %+v", err)
+	return err
 }
 
 func (t *ClickHouseTransaction) prepareLogStmt() error {
