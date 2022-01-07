@@ -110,11 +110,11 @@ func insertData(data interface{}) error {
 func DecodeEvents(b *common.Block) error {
 	// Note: client.Eth().GetLogs(&logFilter) does not work with `BlockHash` filter, so use base RPC call here
 	var wlogs []*web3.Log
-	for retry := 1; retry <= 3; retry++ {
+	for retry := 1; retry <= 5; retry++ {
 		if err := GetEthereumClient().Call("eth_getLogs", &wlogs, map[string]string{"BlockHash": b.Hash}); err != nil {
 			// retry 3 times on error
 			glog.Warningf("Failed %d times to get logs for block %d: %+v", retry, b.Number, err)
-			time.Sleep(10 * time.Second)
+			time.Sleep(time.Duration(10*retry) * time.Second)
 		}
 	}
 	if wlogs == nil {
