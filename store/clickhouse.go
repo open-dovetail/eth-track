@@ -402,6 +402,10 @@ func (t *ClickHouseTransaction) CommitTx() error {
 		if err = t.tx.Commit(); err != nil {
 			// retry and wait for db reconnect after AWS issue
 			glog.Warningf("Failed %d times to commit db transaction: %+v", retry, err)
+			if strings.Contains(err.Error(), "already been committed") {
+				txn = nil
+				return nil
+			}
 			time.Sleep(time.Duration(20*retry) * time.Second)
 		} else {
 			txn = nil

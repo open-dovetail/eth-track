@@ -92,7 +92,7 @@ SELECT * FROM ethdb.tx_view_7;
 -- Token transfer total by symbol and date
 SELECT
 	sum(t.Status) as TxCount,
-	sum(divide(t.Status * arrayElement(t.`Params.ValueDouble`, 2), exp10(c.Decimals))) as Amount,
+	sum(t.Status * arrayElement(t.`Params.ValueDouble`, 2) * power(10, -c.Decimals)) as Amount,
 	c.Symbol,
 	toDate(t.BlockTime) as TxDate
 FROM
