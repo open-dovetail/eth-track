@@ -1,6 +1,6 @@
 -- Decode progress
 SELECT * FROM ethdb.progress;
-
+	
 -- Check rejected transactions
 optimize table ethdb.transactions final;
 SELECT
@@ -57,6 +57,18 @@ GROUP BY
 	BlockDate
 ORDER BY
 	BlockCount DESC;
+-- Equivalent query using block_view
+SELECT
+	count() AS BlockCount,
+	Miner,
+	BlockDate
+FROM
+	ethdb.block_view
+GROUP BY
+	Miner,
+	BlockDate
+ORDER BY
+	BlockCount DESC;
 
 -- Transaction count by contract methods
 SELECT
@@ -75,6 +87,25 @@ GROUP BY
 	Contract,
 	Method,
 	TxDate
+ORDER BY
+	TxCount DESC;
+-- Equivalent query using tx_view
+SELECT
+	Sum(Status) AS TxCount,
+	Contract,
+	Method,
+	BlockDate
+FROM
+	ethdb.tx_view
+WHERE
+	BlockDate >= '2022-01-01'
+	AND Contract != ''
+	AND Method != ''
+	AND Method != 'UNKNOWN'
+GROUP BY
+	Contract,
+	Method,
+	BlockDate
 ORDER BY
 	TxCount DESC;
 
@@ -99,6 +130,7 @@ FROM
 	ethdb.transactions t
 INNER JOIN ethdb.contracts c ON
 	t.BlockTime >= '2022-01-01 00:00:00'
+	AND t.BlockTime < '2022-01-04 00:00:00'
 	AND t.Method = 'transfer'
 	AND c.Symbol != ''
 	AND t.`To` = c.Address
@@ -106,25 +138,28 @@ GROUP BY
 	c.Symbol,
 	TxDate
 ORDER BY
-	TxCount DESC;
+	TxCount DESC
+LIMIT 5000;
 -- Equivalent query using tx_view_2
 SELECT
 	sum(t.Status) as TxCount,
-	sum(divide(t.Status * t.Amount2, exp10(c.Decimals))) as Amount,
+	sum(t.Status * t.Amount2 * power(10, -c.Decimals)) as Amount,
 	c.Symbol,
-	toDate(t.BlockTime) as TxDate
+	t.BlockDate
 FROM
 	ethdb.tx_view_2 t
 INNER JOIN ethdb.contracts c ON
-	t.BlockTime >= '2022-01-01 00:00:00'
+	t.BlockDate >= '2022-01-01'
+	AND t.BlockDate < '2022-01-04'
 	AND t.Method = 'transfer'
 	AND c.Symbol != ''
 	AND t.Contract = c.Address
 GROUP BY
 	c.Symbol,
-	TxDate
+	t.BlockDate
 ORDER BY
-	TxCount DESC;
+	TxCount DESC
+LIMIT 5000;
 
 -- Token transfer total by symbol, sender and date
 SELECT
@@ -137,6 +172,7 @@ FROM
 	ethdb.transactions t
 INNER JOIN ethdb.contracts c ON
 	t.BlockTime >= '2022-01-01 00:00:00'
+	AND t.BlockTime < '2022-01-02 00:00:00'
 	AND t.Method = 'transfer'
 	AND c.Symbol != ''
 	AND t.`To` = c.Address
@@ -145,27 +181,30 @@ GROUP BY
 	Sender,
 	TxDate
 ORDER BY
-	TxCount DESC;
+	TxCount DESC
+LIMIT 5000;
 -- Equivalent query using tx_view_2
 SELECT
 	sum(t.Status) AS TxCount,
-	sum(divide(t.Status * t.Amount2, exp10(c.Decimals))) AS Amount,
+	sum(t.Status * t.Amount2 * power(10, -c.Decimals)) AS Amount,
 	c.Symbol,
 	t.Sender,
-	toDate(t.BlockTime) AS TxDate
+	t.BlockDate
 FROM
 	ethdb.tx_view_2 t
 INNER JOIN ethdb.contracts c ON
-	t.BlockTime >= '2022-01-01 00:00:00'
+	t.BlockDate >= '2022-01-01'
+	AND t.BlockDate < '2022-01-02'
 	AND t.Method = 'transfer'
 	AND c.Symbol != ''
 	AND t.Contract = c.Address
 GROUP BY
 	Symbol,
 	Sender,
-	TxDate
+	BlockDate
 ORDER BY
-	TxCount DESC;
+	TxCount DESC
+LIMIT 5000;
 
 -- Token transfer total by symbol, recipient and date
 SELECT
@@ -178,7 +217,7 @@ FROM
 	ethdb.transactions t
 INNER JOIN ethdb.contracts c ON
 	t.BlockTime >= '2022-01-01 00:00:00'
-	AND t.BlockTime < '2022-01-03 00:00:00'
+	AND t.BlockTime < '2022-01-02 00:00:00'
 	AND t.Method = 'transfer'
 	AND c.Symbol != ''
 	AND t.`To` = c.Address
@@ -187,28 +226,30 @@ GROUP BY
 	Recipient,
 	TxDate
 ORDER BY
-	TxCount DESC;
+	TxCount DESC
+LIMIT 5000;
 -- Equivalent query using tx_view_2
 SELECT
 	sum(t.Status) AS TxCount,
-	sum(divide(t.Status * t.Amount2, exp10(c.Decimals))) AS Amount,
+	sum(t.Status * t.Amount2 * power(10, -c.Decimals)) AS Amount,
 	c.Symbol,
 	substring(t.Value1, 3) AS Recipient,
-	toDate(t.BlockTime) AS TxDate
+	t.BlockDate
 FROM
 	ethdb.tx_view_2 t
 INNER JOIN ethdb.contracts c ON
-	t.BlockTime >= '2022-01-01 00:00:00'
-	AND t.BlockTime < '2022-01-03 00:00:00'
+	t.BlockDate >= '2022-01-01'
+	AND t.BlockDate < '2022-01-02'
 	AND t.Method = 'transfer'
 	AND c.Symbol != ''
 	AND t.Contract = c.Address
 GROUP BY
 	Symbol,
 	Recipient,
-	TxDate
+	BlockDate
 ORDER BY
-	TxCount DESC;
+	TxCount DESC
+LIMIT 5000;
 
 -- Test log views
 SELECT * FROM ethdb.log_params_view;

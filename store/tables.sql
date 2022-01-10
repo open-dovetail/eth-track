@@ -101,7 +101,10 @@ CREATE VIEW ethdb.tx_view AS
 		Gas,
 		Value,
 		Nonce,
-		BlockTime
+		BlockTime,
+		toDate(BlockTime) AS BlockDate,
+		toStartOfMonth(BlockTime) AS BlockMonth,
+		toYear(BlockTime) AS BlockYear
 	FROM
 		ethdb.transactions;
 
@@ -117,7 +120,10 @@ CREATE VIEW ethdb.tx_view_1 AS
 		arrayElement(Params.ValueString,1) AS Value1,
 		arrayElement(Params.ValueDouble,1) AS Amount1,
 		Value,
-		BlockTime
+		BlockTime,
+		toDate(BlockTime) AS BlockDate,
+		toStartOfMonth(BlockTime) AS BlockMonth,
+		toYear(BlockTime) AS BlockYear
 	FROM
 		ethdb.transactions
 	WHERE
@@ -140,7 +146,10 @@ CREATE VIEW ethdb.tx_view_2 AS
 		arrayElement(Params.ValueString,2) AS Value2,
 		arrayElement(Params.ValueDouble,2) AS Amount2,
 		Value,
-		BlockTime
+		BlockTime,
+		toDate(BlockTime) AS BlockDate,
+		toStartOfMonth(BlockTime) AS BlockMonth,
+		toYear(BlockTime) AS BlockYear
 	FROM
 		ethdb.transactions
 	WHERE
@@ -166,7 +175,10 @@ CREATE VIEW ethdb.tx_view_3 AS
 		arrayElement(Params.ValueString,3) AS Value3,
 		arrayElement(Params.ValueDouble,3) AS Amount3,
 		Value,
-		BlockTime
+		BlockTime,
+		toDate(BlockTime) AS BlockDate,
+		toStartOfMonth(BlockTime) AS BlockMonth,
+		toYear(BlockTime) AS BlockYear
 	FROM
 		ethdb.transactions
 	WHERE
@@ -195,7 +207,10 @@ CREATE VIEW ethdb.tx_view_4 AS
 		arrayElement(Params.ValueString,4) AS Value4,
 		arrayElement(Params.ValueDouble,4) AS Amount4,
 		Value,
-		BlockTime
+		BlockTime,
+		toDate(BlockTime) AS BlockDate,
+		toStartOfMonth(BlockTime) AS BlockMonth,
+		toYear(BlockTime) AS BlockYear
 	FROM
 		ethdb.transactions
 	WHERE
@@ -227,7 +242,10 @@ CREATE VIEW ethdb.tx_view_5 AS
 		arrayElement(Params.ValueString,5) AS Value5,
 		arrayElement(Params.ValueDouble,5) AS Amount5,
 		Value,
-		BlockTime
+		BlockTime,
+		toDate(BlockTime) AS BlockDate,
+		toStartOfMonth(BlockTime) AS BlockMonth,
+		toYear(BlockTime) AS BlockYear
 	FROM
 		ethdb.transactions
 	WHERE
@@ -262,7 +280,10 @@ CREATE VIEW ethdb.tx_view_6 AS
 		arrayElement(Params.ValueString,6) AS Value6,
 		arrayElement(Params.ValueDouble,6) AS Amount6,
 		Value,
-		BlockTime
+		BlockTime,
+		toDate(BlockTime) AS BlockDate,
+		toStartOfMonth(BlockTime) AS BlockMonth,
+		toYear(BlockTime) AS BlockYear
 	FROM
 		ethdb.transactions
 	WHERE
@@ -300,7 +321,10 @@ CREATE VIEW ethdb.tx_view_7 AS
 		arrayElement(Params.ValueString,7) AS Value7,
 		arrayElement(Params.ValueDouble,7) AS Amount7,
 		Value,
-		BlockTime
+		BlockTime,
+		toDate(BlockTime) AS BlockDate,
+		toStartOfMonth(BlockTime) AS BlockMonth,
+		toYear(BlockTime) AS BlockYear
 	FROM
 		ethdb.transactions
 	WHERE
@@ -321,7 +345,10 @@ CREATE VIEW ethdb.tx_params_view AS
 		Params.ValueString,
 		Params.ValueDouble,
 		Value,
-		BlockTime
+		BlockTime,
+		toDate(BlockTime) AS BlockDate,
+		toStartOfMonth(BlockTime) AS BlockMonth,
+		toYear(BlockTime) AS BlockYear
 	FROM
 		ethdb.transactions
     ARRAY JOIN Params
@@ -340,7 +367,10 @@ CREATE VIEW ethdb.log_view AS
 		TxnHash,
 		Address AS Contract,
 		Event,
-		BlockTime
+		BlockTime,
+		toDate(BlockTime) AS BlockDate,
+		toStartOfMonth(BlockTime) AS BlockMonth,
+		toYear(BlockTime) AS BlockYear
 	FROM
 		ethdb.logs;
 	
@@ -357,7 +387,10 @@ CREATE VIEW ethdb.log_view_1 AS
 		arrayElement(Params.Name,1) AS Key1,
 		arrayElement(Params.ValueString,1) AS Value1,
 		arrayElement(Params.ValueDouble,1) AS Amount1,
-		BlockTime
+		BlockTime,
+		toDate(BlockTime) AS BlockDate,
+		toStartOfMonth(BlockTime) AS BlockMonth,
+		toYear(BlockTime) AS BlockYear
 	FROM
 		ethdb.logs
 	WHERE
@@ -380,7 +413,10 @@ CREATE VIEW ethdb.log_view_2 AS
 		arrayElement(Params.Name,2) AS Key2,
 		arrayElement(Params.ValueString,2) AS Value2,
 		arrayElement(Params.ValueDouble,2) AS Amount2,
-		BlockTime
+		BlockTime,
+		toDate(BlockTime) AS BlockDate,
+		toStartOfMonth(BlockTime) AS BlockMonth,
+		toYear(BlockTime) AS BlockYear
 	FROM
 		ethdb.logs
 	WHERE
@@ -406,7 +442,10 @@ CREATE VIEW ethdb.log_view_3 AS
 		arrayElement(Params.Name,3) AS Key3,
 		arrayElement(Params.ValueString,3) AS Value3,
 		arrayElement(Params.ValueDouble,3) AS Amount3,
-		BlockTime
+		BlockTime,
+		toDate(BlockTime) AS BlockDate,
+		toStartOfMonth(BlockTime) AS BlockMonth,
+		toYear(BlockTime) AS BlockYear
 	FROM
 		ethdb.logs
 	WHERE
@@ -435,7 +474,10 @@ CREATE VIEW ethdb.log_view_4 AS
 		arrayElement(Params.Name,4) AS Key4,
 		arrayElement(Params.ValueString,4) AS Value4,
 		arrayElement(Params.ValueDouble,4) AS Amount4,
-		BlockTime
+		BlockTime,
+		toDate(BlockTime) AS BlockDate,
+		toStartOfMonth(BlockTime) AS BlockMonth,
+		toYear(BlockTime) AS BlockYear
 	FROM
 		ethdb.logs
 	WHERE
@@ -467,7 +509,10 @@ CREATE VIEW ethdb.log_view_5 AS
 		arrayElement(Params.Name,5) AS Key5,
 		arrayElement(Params.ValueString,5) AS Value5,
 		arrayElement(Params.ValueDouble,5) AS Amount5,
-		BlockTime
+		BlockTime,
+		toDate(BlockTime) AS BlockDate,
+		toStartOfMonth(BlockTime) AS BlockMonth,
+		toYear(BlockTime) AS BlockYear
 	FROM
 		ethdb.logs
 	WHERE
@@ -488,10 +533,49 @@ CREATE VIEW ethdb.log_params_view AS
 		Params.Seq,
 		Params.ValueString,
 		Params.ValueDouble,
-		BlockTime
+		BlockTime,
+		toDate(BlockTime) AS BlockDate,
+		toStartOfMonth(BlockTime) AS BlockMonth,
+		toYear(BlockTime) AS BlockYear
 	FROM
 		ethdb.logs 
     ARRAY JOIN Params
 	WHERE
 		Event != 'UNKNOWN'
 		AND (Params.ValueString != '' OR Params.ValueDouble > 0);
+
+DROP VIEW IF EXISTS ethdb.block_view;
+CREATE VIEW ethdb.block_view AS
+    SELECT
+		Hash,
+		`Number` AS BlockNumber,
+		ParentHash,
+		Miner,
+		Difficulty,
+		GasLimit,
+		GasUsed,
+		Status,
+		BlockTime,
+		toDate(BlockTime) AS BlockDate,
+		toStartOfMonth(BlockTime) AS BlockMonth,
+		toYear(BlockTime) AS BlockYear
+	FROM
+		ethdb.blocks;
+
+DROP VIEW IF EXISTS ethdb.contract_view;
+CREATE VIEW ethdb.contract_view AS
+    SELECT
+		Address,
+		Name,
+		Symbol,
+		Decimals,
+		TotalSupply,
+		UpdatedDate,
+		StartEventDate,
+		LastEventDate,
+		LastErrorTime,
+		ABI,
+		toStartOfMonth(LastEventDate) AS LastEventMonth,
+		toYear(LastEventDate) AS LastEventYear
+	FROM
+		ethdb.contracts;
