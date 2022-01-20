@@ -189,7 +189,7 @@ func NewContract(address string, blockTime int64) (*common.Contract, error) {
 		} else {
 			// Etherscan connection down, wait and retry
 			glog.Warningf("Etherscan API failed %d times for address %s: %+v", retry, address, err)
-			time.Sleep(10 * time.Second)
+			time.Sleep(time.Duration(10*retry) * time.Second)
 		}
 	}
 	if len(contract.ABI) == 0 {
