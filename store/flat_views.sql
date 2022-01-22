@@ -1,3 +1,6 @@
+-- Not used.
+-- necessary only if client cannot validate ClickHouse specific functions
+
 DROP VIEW IF EXISTS ethdb.tx_view;
 CREATE VIEW ethdb.tx_view AS
     SELECT
