@@ -60,6 +60,8 @@ ORDER BY Count DESC
 
 A sample dashboard implemented in [Spotfire Analyst](https://docs.tibco.com/pub/spotfire/general/sr/GUID-866E8AA7-37D5-417B-B3B0-CDD7125D46B8.html?_ga=2.151564863.701630237.1643400214-2057914078.1626913033) is described in [this blog](https://community.tibco.com/wiki/visualizing-ethereum-data-using-tibco-spotfire).
 
+![USDC Daily Transfer](./eth-track.png)
+
 ## Visualize data in Redash
 
 Start a [Redash](https://redash.io/product/) server instance as described [here](https://redash.io/help/open-source/setup).
