@@ -105,3 +105,8 @@ jupyter lab
 ```
 
 Open the sample notebook [plotly-charts.ipynb](./plotly-charts.ipynb), which describes steps to query the ClickHouse database and visualize results in [plotly](https://plotly.com/python/getting-started/#overview) charts.
+
+## Todo
+
+* Collect ERC token balance of every EOA (Externally-Owned Account), e.g., by calling `balanceOf(eoa)` on the contract in each ERC-20/ERC-721 transfer transaction, or `balanceOfBatch()` for ERC-1155 batch-transfer transactions.
+* Collect ETH balance of every EOA by looking at state trie change after every block?
