@@ -47,7 +47,7 @@ Top daily transfers of ERC20 tokens
 ```sql
 SELECT 
     count() as Count, 
-    sum(divide(arrayElement(Params.ValueDouble, 2), exp10(Decimals))) as Amount, 
+    divide(sum(arrayElement(Params.ValueDouble, 2), exp10(Decimals))) as Amount, 
     Symbol, toDate(BlockTime) as Date 
 FROM ethdb.transactions t 
 INNER JOIN ethdb.contracts c 
@@ -58,7 +58,9 @@ ORDER BY Count DESC
 
 ## Visualize data in Spotfire
 
-A sample dashboard implemented in [Spotfire Analyst](https://docs.tibco.com/pub/spotfire/general/sr/GUID-866E8AA7-37D5-417B-B3B0-CDD7125D46B8.html?_ga=2.151564863.701630237.1643400214-2057914078.1626913033) is described in [this blog](https://community.tibco.com/wiki/visualizing-ethereum-data-using-tibco-spotfire).
+[Spotfire Analyst](https://docs.tibco.com/pub/spotfire/general/sr/GUID-866E8AA7-37D5-417B-B3B0-CDD7125D46B8.html?_ga=2.151564863.701630237.1643400214-2057914078.1626913033) may connect to a ClickHouse database directly via an [ODBC driver](https://github.com/ClickHouse/clickhouse-odbc/releases), or via a TIBCO Cloud Spotfire server that connects to a ClickHouse data source configured in a [TIBCO Data Virtualization](https://www.tibco.com/products/data-virtualization) server by using either the [Native JDBC Driver](https://github.com/housepower/ClickHouse-Native-JDBC/releases/tag/v2.6.4) or the [Official JDBC Driver](https://github.com/ClickHouse/clickhouse-jdbc/releases/tag/v0.2.6).
+
+A sample Ethereum dashboard implemented in [Spotfire Analyst](https://docs.tibco.com/pub/spotfire/general/sr/GUID-866E8AA7-37D5-417B-B3B0-CDD7125D46B8.html?_ga=2.151564863.701630237.1643400214-2057914078.1626913033) is described in [this blog](https://community.tibco.com/wiki/visualizing-ethereum-data-using-tibco-spotfire).
 
 ![USDC Daily Transfer](./eth-track.png)
 
