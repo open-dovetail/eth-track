@@ -45,20 +45,24 @@ var txnLock = &sync.Mutex{}
 
 // open a clickhouse db connection, e.g.
 // NewClickHouseConnection("http://127.0.0.1:8123", "default", map[string]string{"debug": "1"})
-func NewClickHouseConnection(dbURL string, dbName string, params map[string]string) (*ClickHouseConnection, error) {
+func NewClickHouseConnection(dbURL, dbName, rootCA string, params map[string]string) (*ClickHouseConnection, error) {
 	u, err := url.Parse(dbURL)
 	if err != nil {
 		return nil, err
 	}
 
 	u.Path = dbName
+	q := u.Query()
+	if len(rootCA) > 0 {
+		q.Set("ssl", "true")
+		q.Set("sslrootcert", rootCA)
+	}
 	if len(params) > 0 {
-		q := u.Query()
 		for k, v := range params {
 			q.Set(k, v)
 		}
-		u.RawQuery = q.Encode()
 	}
+	u.RawQuery = q.Encode()
 
 	connect := &ClickHouseConnection{url: u.String()}
 	if err := connect.Open(); err != nil {

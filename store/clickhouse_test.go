@@ -42,7 +42,7 @@ func setup() error {
 		params["password"] = dbPassword
 	}
 	// params["debug"] = "1"
-	if _, err := NewClickHouseConnection(dbURL, dbName, params); err != nil {
+	if _, err := NewClickHouseConnection(dbURL, dbName, "", params); err != nil {
 		return errors.Wrapf(err, "Failed to connect to clickhouse db at %s/%s", dbURL, dbName)
 	}
 	return nil

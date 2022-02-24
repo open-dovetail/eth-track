@@ -28,6 +28,7 @@ type Config struct {
 	command         string // newTx, oldTx, or rejectTx
 	dbURL           string // clickhouse URL
 	dbName          string // clickhouse database name
+	dbRootCert      string // root certificate file for HTTPS connection
 	dbUser          string // clickhouse user name
 	dbPassword      string // clickhouse user password
 }
@@ -45,10 +46,11 @@ func init() {
 	flag.IntVar(&config.statusBatchSize, "statusBatchSize", 100, "number of rejected tx per db insert")
 	flag.IntVar(&config.statusIntHours, "statusIntHours", 12, "interval hours per thread for updating tx status")
 	flag.StringVar(&config.command, "command", "newTx", "newTx or oldTx to decode transactions; or rejectTx to update transaction status")
-	flag.StringVar(&config.dbURL, "dbURL", "http://127.0.0.1:8123", "Etherscan API key")
-	flag.StringVar(&config.dbName, "dbName", "ethdb", "Etherscan API key")
-	flag.StringVar(&config.dbUser, "dbUser", "default", "Etherscan API key")
-	flag.StringVar(&config.dbPassword, "dbPassword", "clickhouse", "Etherscan API key")
+	flag.StringVar(&config.dbURL, "dbURL", "http://127.0.0.1:8123", "ClickHouse connection URL")
+	flag.StringVar(&config.dbName, "dbName", "ethdb", "ClickHouse database name")
+	flag.StringVar(&config.dbRootCert, "dbRootCert", "", "ClickHouse server root CA file name for HTTPS connection")
+	flag.StringVar(&config.dbUser, "dbUser", "default", "ClickHouse database username")
+	flag.StringVar(&config.dbPassword, "dbPassword", "clickhouse", "ClickHouse database user password")
 }
 
 // check env variables, which overrides the commandline input
@@ -70,6 +72,9 @@ func envOverride() {
 	}
 	if v, ok := os.LookupEnv("CLICKHOUSE_PASSWORD"); ok && v != "" {
 		config.dbPassword = v
+	}
+	if v, ok := os.LookupEnv("CLICKHOUSE_ROOTCA"); ok && v != "" {
+		config.dbRootCert = v
 	}
 
 	// Google log setting
@@ -184,7 +189,7 @@ func connect() error {
 	if glog.V(2) {
 		params["debug"] = "1"
 	}
-	if _, err := store.NewClickHouseConnection(config.dbURL, config.dbName, params); err != nil {
+	if _, err := store.NewClickHouseConnection(config.dbURL, config.dbName, config.dbRootCert, params); err != nil {
 		return errors.Wrapf(err, "Failed to connect to clickhouse db at %s/%s", config.dbURL, config.dbName)
 	}
 	return nil
