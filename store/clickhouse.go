@@ -57,8 +57,8 @@ func NewClickHouseConnection(dbURL, dbName, rootCA string, params map[string]str
 	u.Path = dbName
 	q := u.Query()
 	if len(rootCA) > 0 {
-		setTLSConfig("tlsConf", rootCA)
-		q.Set("tls_config", "tlsConf")
+		setTLSConfig("tls_config", rootCA)
+		q.Set("tls_config", "tls_config")
 	}
 	if len(params) > 0 {
 		for k, v := range params {
@@ -86,6 +86,7 @@ func setTLSConfig(key, rootCA string) error {
 	conf := &tls.Config{
 		RootCAs: certPool,
 	}
+	glog.Infof("register TLS key %s\n root CA: %s", key, string(cert))
 	return clickhouse.RegisterTLSConfig(key, conf)
 }
 
@@ -118,6 +119,7 @@ func GetDBTx() (*ClickHouseTransaction, error) {
 }
 
 func (c *ClickHouseConnection) Open() error {
+	glog.Infof("connect to database %s", c.url)
 	connect, err := sql.Open("clickhouse", c.url)
 	if err != nil {
 		return err
