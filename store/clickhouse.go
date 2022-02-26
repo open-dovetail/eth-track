@@ -1,11 +1,14 @@
 package store
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"database/sql"
 	"database/sql/driver"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"math/big"
 	"net/url"
 	"reflect"
@@ -54,8 +57,8 @@ func NewClickHouseConnection(dbURL, dbName, rootCA string, params map[string]str
 	u.Path = dbName
 	q := u.Query()
 	if len(rootCA) > 0 {
-		q.Set("ssl", "true")
-		q.Set("sslrootcert", rootCA)
+		setTLSConfig("tlsConf", rootCA)
+		q.Set("tls_config", "tlsConf")
 	}
 	if len(params) > 0 {
 		for k, v := range params {
@@ -70,6 +73,20 @@ func NewClickHouseConnection(dbURL, dbName, rootCA string, params map[string]str
 	}
 	db = connect
 	return connect, nil
+}
+
+func setTLSConfig(key, rootCA string) error {
+	cert, err := ioutil.ReadFile(rootCA)
+	if err != nil {
+		return errors.Wrapf(err, "Failed to read certificate file %s", rootCA)
+	}
+	certPool := x509.NewCertPool()
+	certPool.AppendCertsFromPEM(cert)
+
+	conf := &tls.Config{
+		RootCAs: certPool,
+	}
+	return clickhouse.RegisterTLSConfig(key, conf)
 }
 
 func GetDBConnection() *ClickHouseConnection {
