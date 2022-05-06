@@ -2,6 +2,7 @@ package proc
 
 import (
 	"encoding/hex"
+	"strings"
 
 	"sync"
 	"time"
@@ -91,6 +92,7 @@ func GetContract(address string, blockTime int64) (*common.Contract, error) {
 
 // query and cache contracts used in recent days -- used when restart the decode engine
 func CacheContracts(days int) error {
+	glog.Infof("retrieve knownn contracts from database that are active in recent %d days", days)
 	rows, err := redshift.QueryContracts(days)
 	if err != nil {
 		return err
@@ -334,17 +336,18 @@ func DecodeEventData(wlog *web3.Log, blockTime int64) (*DecodedData, error) {
 	}
 	if !ok {
 		// find contract event
-		contract, err := GetContract(wlog.Address.String(), blockTime)
+		addr := strings.ToLower(wlog.Address.String())
+		contract, err := GetContract(addr, blockTime)
 		if err != nil {
 			return nil, err
 		}
 		if event, ok = contract.Events[eventID]; !ok {
 			setContractErrorTime(contract, blockTime)
-			return nil, errors.Errorf("Unknown event %s %s", wlog.Address.String(), eventID)
+			return nil, errors.Errorf("Unknown event %s %s", addr, eventID)
 		}
 		if data, err = event.ParseLog(wlog); err != nil {
 			setContractErrorTime(contract, blockTime)
-			return nil, errors.Wrapf(err, "Error parsing log %s", wlog.Address.String())
+			return nil, errors.Wrapf(err, "Error parsing log %s", addr)
 		}
 	}
 

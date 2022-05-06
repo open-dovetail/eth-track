@@ -39,7 +39,7 @@ func init() {
 	flag.IntVar(&config.etherscanDelay, "etherscanDelay", 350, "delay in millis between etherscan API calls")
 	flag.IntVar(&config.blockDelay, "blockDelay", 12, "blockchain height delay for last confirmed block")
 	flag.IntVar(&config.threads, "threads", 5, "number of threads for processing blocks")
-	flag.IntVar(&config.batchSize, "batchSize", 100, "size of block interval per worker job")
+	flag.IntVar(&config.batchSize, "batchSize", 40, "size of block interval per worker job")
 	flag.StringVar(&config.awsProfile, "profile", "default", "profile name for AWS user")
 	flag.StringVar(&config.awsRegion, "region", "us-west-2", "AWS region for redshift server")
 	flag.StringVar(&config.awsSecret, "secret", "dev/ethdb/Redshift", "AWS secret alias for redshift connection")
@@ -105,6 +105,11 @@ func main() {
 	// initialize block progress from db
 	if _, err := redshift.GetBlockCache(); err != nil {
 		glog.Fatalf("Failed initialization of block cache: %+v", err)
+	}
+
+	// initialize contract cache to contain contracts invoked in the last month
+	if err := proc.CacheContracts(30); err != nil {
+		glog.Fatalf("Failed to fetch contracts from database: %+v", err)
 	}
 
 	// register os interrupt signal

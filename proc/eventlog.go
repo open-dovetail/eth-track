@@ -1,6 +1,8 @@
 package proc
 
 import (
+	"strings"
+
 	"github.com/golang/glog"
 	"github.com/open-dovetail/eth-track/common"
 	web3 "github.com/umbracle/ethgo"
@@ -16,13 +18,13 @@ func DecodeEventLog(wlog *web3.Log, blockTime int64) *common.EventLog {
 		Removed:     wlog.Removed,
 		TxnIndex:    wlog.TransactionIndex,
 		TxnHash:     wlog.TransactionHash.String(),
-		Address:     wlog.Address.String(),
+		Address:     strings.ToLower(wlog.Address.String()),
 		Data:        wlog.Data,
 		BlockTime:   blockTime,
 	}
 	// decode only if event topics exist
 	if len(wlog.Topics) < 1 {
-		glog.Warningf("Event log %d: %s No topics for contract %s", wlog.LogIndex, wlog.TransactionHash.String(), wlog.Address.String())
+		glog.Warningf("Event log %d: %s No topics for contract %s", wlog.LogIndex, wlog.TransactionHash.String(), result.Address)
 		return result
 	}
 

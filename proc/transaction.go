@@ -1,6 +1,7 @@
 package proc
 
 import (
+	"strings"
 	"time"
 
 	"github.com/golang/glog"
@@ -18,7 +19,7 @@ func DecodeTransaction(tx *web3.Transaction, blockTime int64) *common.Transactio
 		BlockNumber: tx.BlockNumber,
 		TxnIndex:    tx.TxnIndex,
 		Status:      true,
-		From:        tx.From.String(),
+		From:        strings.ToLower(tx.From.String()),
 		Input:       tx.Input,
 		GasPrice:    tx.GasPrice,
 		Gas:         tx.Gas,
@@ -27,7 +28,7 @@ func DecodeTransaction(tx *web3.Transaction, blockTime int64) *common.Transactio
 		BlockTime:   blockTime,
 	}
 	if tx.To != nil {
-		result.To = tx.To.String()
+		result.To = strings.ToLower(tx.To.String())
 	}
 
 	// decode only if method is specified in the input data
@@ -43,7 +44,7 @@ func DecodeTransaction(tx *web3.Transaction, blockTime int64) *common.Transactio
 		return result
 	}
 
-	if data, err := DecodeTransactionInput(tx.Input, tx.To.String(), blockTime); err == nil {
+	if data, err := DecodeTransactionInput(tx.Input, result.To, blockTime); err == nil {
 		result.Method = data.Name
 		result.Params = data.Params
 	} else {

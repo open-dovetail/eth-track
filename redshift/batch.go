@@ -21,7 +21,7 @@ import (
 
 func quotedBytes(buf []byte) string {
 	if len(buf) > 10240 {
-		glog.Warning("ignore large byte array of length", len(buf))
+		glog.Warning("ignore large byte array of length ", len(buf))
 		return `'\x'`
 	}
 	return `'\x` + hex.EncodeToString(buf) + "'"
@@ -29,7 +29,7 @@ func quotedBytes(buf []byte) string {
 
 func quotedString(str string) string {
 	if len(str) > 32768 {
-		glog.Warning("ignore large string of length", len(str))
+		glog.Warning("ignore large string of length ", len(str))
 		return ""
 	}
 	return "'" + strings.ReplaceAll(str, "'", "''") + "'"
