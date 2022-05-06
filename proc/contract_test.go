@@ -10,7 +10,7 @@ import (
 	"github.com/open-dovetail/eth-track/common"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	web3 "github.com/umbracle/go-web3"
+	web3 "github.com/umbracle/ethgo"
 )
 
 func TestContract(t *testing.T) {
@@ -26,6 +26,8 @@ func TestContract(t *testing.T) {
 		assert.Equal(t, expected[i][0], len(c.Methods), "contract %s should contain %d methods", addr, expected[i][0])
 		assert.Equal(t, expected[i][1], len(c.Events), "contract %s should contain %d events", addr, expected[i][1])
 	}
+	//err := redshift.InsertContracts(contractCache.created)
+	//assert.NoError(t, err, "save contracts should not throw error")
 }
 
 // This test gets source code of a contract from etherscan, although it returns only compiled code
@@ -43,7 +45,7 @@ func TestDecodeTransaction(t *testing.T) {
 	tx, err := GetEthereumClient().Eth().GetTransactionByHash(web3.HexToHash(txHash))
 	require.NoError(t, err, "Get transaction should not throw exception")
 	address := tx.To.String()
-	data, err := GetEtherscanAPI().FetchABI(address)
+	data, err := FetchABI(address, 0)
 	require.NoError(t, err, "Fetch ABI should not throw exception")
 	contract := &common.Contract{
 		Address: address,

@@ -6,7 +6,7 @@ import (
 	"github.com/golang/glog"
 	"github.com/open-dovetail/eth-track/common"
 	"github.com/pkg/errors"
-	web3 "github.com/umbracle/go-web3"
+	web3 "github.com/umbracle/ethgo"
 )
 
 func DecodeTransaction(tx *web3.Transaction, blockTime int64) *common.Transaction {
@@ -19,6 +19,7 @@ func DecodeTransaction(tx *web3.Transaction, blockTime int64) *common.Transactio
 		TxnIndex:    tx.TxnIndex,
 		Status:      true,
 		From:        tx.From.String(),
+		Input:       tx.Input,
 		GasPrice:    tx.GasPrice,
 		Gas:         tx.Gas,
 		Value:       tx.Value,
@@ -54,6 +55,8 @@ func DecodeTransaction(tx *web3.Transaction, blockTime int64) *common.Transactio
 	if glog.V(1) {
 		glog.Infof("Transaction %d: %s Method %s", tx.TxnIndex, tx.Hash.String(), result.Method)
 	}
+	//fmt.Printf("Transaction %d: %s Method %s\n", tx.TxnIndex, tx.Hash.String(), result.Method)
+
 	return result
 }
 

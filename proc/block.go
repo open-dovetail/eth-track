@@ -5,49 +5,103 @@ import (
 
 	"github.com/golang/glog"
 	"github.com/open-dovetail/eth-track/common"
-	"github.com/open-dovetail/eth-track/store"
+	"github.com/open-dovetail/eth-track/redshift"
 	"github.com/pkg/errors"
-	web3 "github.com/umbracle/go-web3"
+	web3 "github.com/umbracle/ethgo"
 )
 
-// return block at the delayed height from the current block
-func LastConfirmedBlock(blockDelay int) (*web3.Block, error) {
-	client := GetEthereumClient()
-	lastBlock, err := client.Eth().BlockNumber()
-	if err != nil {
-		return nil, err
-	}
-	block, err := client.Eth().GetBlockByNumber(web3.BlockNumber(lastBlock), true)
-	if err != nil {
-		return nil, err
-	}
-	for i := 0; i < blockDelay; i++ {
-		if block, err = client.Eth().GetBlockByHash(block.ParentHash, true); err != nil {
-			return nil, err
-		}
-	}
-	return block, nil
+var blockDelay int
+
+func SetBlockDelay(delay int) {
+	blockDelay = delay
 }
 
-func GetBlockByNumber(blockNumber uint64) (*common.Block, error) {
-	block, err := GetEthereumClient().Eth().GetBlockByNumber(web3.BlockNumber(blockNumber), true)
-	if err != nil {
-		return nil, err
+// return block at the delayed height from the current block
+func LastConfirmedBlock() (*web3.Block, error) {
+	for retry := 1; retry <= 3; retry++ {
+		client := GetEthereumClient()
+		lastBlock, err := client.Eth().BlockNumber()
+		if err != nil {
+			// Ethereum call failed, wait and retry
+			glog.Warningf("Failed %d times to get last block number: %+v", retry, err)
+			time.Sleep(10 * time.Second)
+			continue
+		}
+		bn := lastBlock - uint64(12) // default to delay confirmed block by 12 blocks
+		if blockDelay > 0 {
+			bn = lastBlock - uint64(blockDelay)
+		}
+		if block, err := client.Eth().GetBlockByNumber(web3.BlockNumber(bn), true); err == nil {
+			return block, nil
+		} else {
+			// Ethereum call failed, wait and retry
+			glog.Warningf("Failed %d times to get last confirmed block %d: %+v", retry, lastBlock-uint64(blockDelay), err)
+			time.Sleep(10 * time.Second)
+			continue
+		}
 	}
-	return &common.Block{
-		Hash:       block.Hash.String(),
-		Number:     block.Number,
-		ParentHash: block.ParentHash,
-		BlockTime:  int64(block.Timestamp),
-	}, nil
+	return nil, errors.Errorf("Failed to get last confirmed block")
+}
+
+// decode range of blocks and return the first and last blocks.
+// if hiBlock is 0, decode from the last confirmed block;
+// if lowBlock is 0, decode only a single block specified by the hiBlock.
+func DecodeBlockRange(hiBlock, lowBlock uint64) (lastBlock *common.Block, firstBlock *common.Block, err error) {
+	if hiBlock < lowBlock {
+		// ignore wrong block range
+		return nil, nil, nil
+	}
+	startTime := time.Now().Unix() // to print out elapsed time of the decode process
+	nextBlock := hiBlock
+	if hiBlock == 0 {
+		// decode last confirmed block if hiBlock is not specified
+		var block *web3.Block
+		block, err = LastConfirmedBlock()
+		if err != nil {
+			return nil, nil, err
+		}
+		if lastBlock, err = DecodeBlock(block); err != nil {
+			return nil, nil, err
+		}
+		firstBlock = lastBlock
+		nextBlock = lastBlock.Number - 1
+	}
+
+	if lowBlock == 0 {
+		// return single block if lowBlock is not specified
+		if lastBlock != nil {
+			return lastBlock, lastBlock, nil
+		}
+		lowBlock = nextBlock
+	}
+
+	for nextBlock >= lowBlock {
+		var block *common.Block
+		if block, err = DecodeBlockByNumber(nextBlock); err != nil {
+			return lastBlock, firstBlock, err
+		}
+		firstBlock = block
+		if nextBlock == hiBlock {
+			lastBlock = block
+		}
+		nextBlock--
+	}
+
+	glog.Infof("Decoded block range [%d, %d] - elapsed: %ds", firstBlock.Number, lastBlock.Number, (time.Now().Unix() - startTime))
+	return lastBlock, firstBlock, nil
 }
 
 func DecodeBlockByNumber(blockNumber uint64) (*common.Block, error) {
-	block, err := GetEthereumClient().Eth().GetBlockByNumber(web3.BlockNumber(blockNumber), true)
-	if err != nil {
-		return nil, err
+	for retry := 1; retry <= 3; retry++ {
+		if block, err := GetEthereumClient().Eth().GetBlockByNumber(web3.BlockNumber(blockNumber), true); err == nil {
+			return DecodeBlock(block)
+		} else {
+			// Ethereum call failed, wait and retry
+			glog.Warningf("Failed %d times to get block by number %d: %+v", retry, blockNumber, err)
+			time.Sleep(10 * time.Second)
+		}
 	}
-	return DecodeBlock(block)
+	return nil, errors.Errorf("Failed to get block by number %d", blockNumber)
 }
 
 func DecodeBlockByHash(blockHash web3.Hash) (*common.Block, error) {
@@ -66,45 +120,42 @@ func DecodeBlockByHash(blockHash web3.Hash) (*common.Block, error) {
 func DecodeBlock(block *web3.Block) (*common.Block, error) {
 	glog.Infof("Block %d: %s @ %d transactions=%d", block.Number, block.Hash.String(), block.Timestamp, len(block.Transactions))
 	result := &common.Block{
-		Hash:       block.Hash.String(),
-		Number:     block.Number,
-		ParentHash: block.ParentHash,
-		Miner:      block.Miner.String(),
-		Difficulty: block.Difficulty,
-		GasLimit:   block.GasLimit,
-		GasUsed:    block.GasUsed,
-		BlockTime:  int64(block.Timestamp),
-		Status:     true,
-	}
-	if err := insertData(result); err != nil {
-		glog.Warningf("Failed to insert block %d: %+v", block.Number, err)
+		Hash:         block.Hash.String(),
+		Number:       block.Number,
+		ParentHash:   block.ParentHash,
+		Miner:        block.Miner.String(),
+		Difficulty:   block.Difficulty,
+		GasLimit:     block.GasLimit,
+		GasUsed:      block.GasUsed,
+		BlockTime:    int64(block.Timestamp),
+		Status:       true,
+		Transactions: make(map[string]*common.Transaction),
+		Logs:         make(map[uint64]*common.EventLog),
 	}
 
 	for _, tx := range block.Transactions {
-		trans := DecodeTransaction(tx, result.BlockTime)
-		if err := insertData(trans); err != nil {
-			glog.Warningf("Failed to insert transaction %s: %+v", trans.Hash, err)
+		txn := DecodeTransaction(tx, result.BlockTime)
+		// check receipt status
+		status, err := GetTransactionStatus(txn.Hash)
+		if err != nil {
+			glog.Errorf("Failed to get transaction status: %s", err.Error())
+			return nil, err
+		}
+		if status {
+			result.Transactions[txn.Hash] = txn
+		} else {
+			if glog.V(1) {
+				glog.Infof("rejected transaction %s", txn.Hash)
+			}
 		}
 	}
-	err := DecodeEvents(result)
-	return result, err
-}
+	if err := DecodeEvents(result); err != nil {
+		return result, err
+	}
 
-func insertData(data interface{}) error {
-	if store.GetDBConnection() == nil {
-		return errors.New("Database connection is not initialized")
-	}
-	switch v := data.(type) {
-	case *common.Block:
-		return store.MustGetDBTx().InsertBlock(v)
-	case *common.Transaction:
-		return store.MustGetDBTx().InsertTransaction(v)
-	case *common.EventLog:
-		return store.MustGetDBTx().InsertLog(v)
-	case *common.Contract:
-		return store.MustGetDBTx().InsertContract(v)
-	}
-	return nil
+	// save block and associated transactions and logs in database
+	err := redshift.InsertBlock(result)
+	return result, err
 }
 
 func DecodeEvents(b *common.Block) error {
@@ -129,8 +180,12 @@ func DecodeEvents(b *common.Block) error {
 
 	for _, w := range wlogs {
 		evt := DecodeEventLog(w, b.BlockTime)
-		if err := insertData(evt); err != nil {
-			glog.Warningf("Failed to insert eventlog %s %d: %s", evt.TxnHash, evt.LogIndex, err.Error())
+		if evt.Removed {
+			if glog.V(1) {
+				glog.Infof("removed event %d-%d", evt.BlockNumber, evt.LogIndex)
+			}
+		} else {
+			b.Logs[evt.LogIndex] = evt
 		}
 	}
 	glog.Infof("Block %d: %s @ %d events=%d", b.Number, b.Hash, b.BlockTime, len(wlogs))

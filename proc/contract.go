@@ -2,7 +2,6 @@ package proc
 
 import (
 	"encoding/hex"
-	"math/big"
 
 	"sync"
 	"time"
@@ -12,45 +11,55 @@ import (
 	"github.com/open-dovetail/eth-track/contract/standard/erc1155"
 	"github.com/open-dovetail/eth-track/contract/standard/erc721"
 	"github.com/open-dovetail/eth-track/contract/standard/erc777"
-	"github.com/open-dovetail/eth-track/store"
+	"github.com/open-dovetail/eth-track/redshift"
 	"github.com/pkg/errors"
-	web3 "github.com/umbracle/go-web3"
-	"github.com/umbracle/go-web3/abi"
+	web3 "github.com/umbracle/ethgo"
+	"github.com/umbracle/ethgo/abi"
+	econ "github.com/umbracle/ethgo/contract"
 )
 
-// standard contract methods/events with ID as key
-var standardMethods = make(map[string]*abi.Method)
-var standardEvents = make(map[string]*abi.Event)
+type contractMap struct {
+	sync.Mutex
+	stdMethods map[string]*abi.Method      // standard contract methods with ID as key
+	stdEvents  map[string]*abi.Event       // standard contract events with ID as key
+	contracts  map[string]*common.Contract // cached contracts by address
+	created    map[string]*common.Contract // new contracts pending db persistence
+}
+
+// singleton contract cache
+var contractCache *contractMap
 
 func init() {
+	contractCache = &contractMap{
+		stdMethods: make(map[string]*abi.Method),
+		stdEvents:  make(map[string]*abi.Event),
+		contracts:  make(map[string]*common.Contract),
+		created:    make(map[string]*common.Contract),
+	}
 	// set methods and events of standard ERC tokens
 	for _, ab := range []*abi.ABI{erc777.ERC777Abi(), erc721.ERC721Abi(), erc1155.ERC1155Abi()} {
 		for _, mth := range ab.Methods {
 			id := hex.EncodeToString(mth.ID())
-			if _, ok := standardMethods[id]; !ok {
-				standardMethods[id] = mth
+			if _, ok := contractCache.stdMethods[id]; !ok {
+				contractCache.stdMethods[id] = mth
 			}
 		}
 		for _, evt := range ab.Events {
 			id := evt.ID().String()
-			if _, ok := standardEvents[id]; !ok {
-				standardEvents[id] = evt
+			if _, ok := contractCache.stdEvents[id]; !ok {
+				contractCache.stdEvents[id] = evt
 			}
 		}
 	}
 }
 
-// singleton contract cache
-var contractCache = map[string]*common.Contract{}
-var contractLock = &sync.Mutex{}
-
 // return a contract by (1) lookup in-memory cache; (2) quey database; (3) fetch from etherscan
 func GetContract(address string, blockTime int64) (*common.Contract, error) {
-	contractLock.Lock()
-	defer contractLock.Unlock()
+	contractCache.Lock()
+	defer contractCache.Unlock()
 
 	// find cached contract
-	if contract, ok := contractCache[address]; ok {
+	if contract, ok := contractCache.contracts[address]; ok {
 		if glog.V(2) {
 			glog.Infof("Found cached contract ABI for address %s Symbol %s methods=%d events=%d", address, contract.Symbol, len(contract.Methods), len(contract.Events))
 		}
@@ -63,8 +72,8 @@ func GetContract(address string, blockTime int64) (*common.Contract, error) {
 	}
 
 	// fetch contract from db
-	if contract, err := store.QueryContract(address); contract != nil && err == nil {
-		contractCache[address] = contract
+	if contract, err := redshift.QueryContract(address); contract != nil && err == nil {
+		contractCache.contracts[address] = contract
 		if err := ParseABI(contract); err != nil {
 			setContractErrorTime(contract, blockTime)
 			return nil, errors.Wrapf(err, "Query returned")
@@ -82,7 +91,7 @@ func GetContract(address string, blockTime int64) (*common.Contract, error) {
 
 // query and cache contracts used in recent days -- used when restart the decode engine
 func CacheContracts(days int) error {
-	rows, err := store.QueryContracts(days)
+	rows, err := redshift.QueryContracts(days)
 	if err != nil {
 		return err
 	}
@@ -90,40 +99,13 @@ func CacheContracts(days int) error {
 
 	iter := 0
 	for rows.Next() {
-		contract := &common.Contract{}
-
-		var totalSupply float64
-		var updatedTime, startEventTime, lastEventTime, lastErrorTime time.Time
-
-		if err := rows.Scan(
-			&contract.Address,
-			&contract.Name,
-			&contract.Symbol,
-			&contract.Decimals,
-			&totalSupply,
-			&updatedTime,
-			&startEventTime,
-			&lastEventTime,
-			&lastErrorTime,
-			&contract.ABI,
-		); err != nil {
-			glog.Errorf("Failed to parse query result for contract: %+v", err)
-		}
+		contract := rows.Value().(*common.Contract)
 
 		iter++
 		if iter%1000 == 0 {
 			glog.Infof("cache contract [%d] %s", iter, contract.Address)
 		}
-
-		contract.Address = "0x" + contract.Address
-		bf := big.NewFloat(totalSupply)
-		v, _ := bf.Int(nil)
-		contract.TotalSupply = v
-		contract.UpdatedTime = updatedTime.Unix()
-		contract.StartEventTime = startEventTime.Unix()
-		contract.LastEventTime = lastEventTime.Unix()
-		contract.LastErrorTime = lastErrorTime.Unix()
-		contractCache[contract.Address] = contract
+		contractCache.contracts[contract.Address] = contract
 		if len(contract.ABI) > 0 {
 			ParseABI(contract)
 		}
@@ -132,58 +114,46 @@ func CacheContracts(days int) error {
 }
 
 func setContractEventTime(contract *common.Contract, blockTime int64) {
-	updated := false
-	eventTime := roundToUTCDate(blockTime)
-	if eventTime > contract.LastEventTime {
-		contract.LastEventTime = eventTime
-		updated = true
+	eventTime := common.RoundToUTCDate(blockTime)
+	if eventTime <= contract.LastEventDate {
+		// update only for new event date
+		return
 	}
-	if eventTime < contract.StartEventTime {
-		contract.StartEventTime = eventTime
-		updated = true
-	}
-	if updated {
-		if err := insertData(contract); err != nil {
+	contract.LastEventDate = eventTime
+	if _, isNew := contractCache.created[contract.Address]; !isNew {
+		if err := redshift.UpdateContract(contract); err != nil {
 			glog.Warningf("Failed to update contract event time %s: %s", contract.Address, err.Error())
 		}
 	}
 }
 
 func setContractErrorTime(contract *common.Contract, blockTime int64) {
-	if blockTime > contract.LastErrorTime {
-		contract.LastErrorTime = blockTime
-		eventTime := roundToUTCDate(blockTime)
-		if eventTime > contract.LastEventTime {
-			contract.LastEventTime = eventTime
-		}
-		if eventTime < contract.StartEventTime {
-			contract.StartEventTime = eventTime
-		}
-		if err := insertData(contract); err != nil {
+	eventTime := common.RoundToUTCDate(blockTime)
+	if eventTime <= contract.LastErrorDate {
+		// update only for new error date
+		return
+	}
+	contract.LastErrorDate = eventTime
+	if eventTime > contract.LastEventDate {
+		contract.LastEventDate = eventTime
+	}
+	if _, isNew := contractCache.created[contract.Address]; !isNew {
+		if err := redshift.UpdateContract(contract); err != nil {
 			glog.Warningf("Failed to update contract error time %s: %s", contract.Address, err.Error())
 		}
 	}
 }
 
 func NewContract(address string, blockTime int64) (*common.Contract, error) {
-	// check etherscan API config
-	api := GetEtherscanAPI()
-	if api == nil {
-		// Etherscan connection not configured, so quit immediately
-		glog.Fatalln("Cannot find Etherscan config.  Must configure it using NewEtherscanAPI(apiKey, etherscanDelay)")
-	}
-
-	eventTime := roundToUTCDate(blockTime)
+	eventTime := common.RoundToUTCDate(blockTime)
 	contract := &common.Contract{
-		Address:        address,
-		UpdatedTime:    roundToUTCDate(0),
-		StartEventTime: eventTime,
-		LastEventTime:  eventTime,
+		Address:       address,
+		LastEventDate: eventTime,
 	}
 
 	// Fetch ABI from etherscan - retry 10 times on etherscan failure
 	for retry := 1; retry <= 10; retry++ {
-		if data, err := api.FetchABI(address); err == nil {
+		if data, err := FetchABI(address, 0); err == nil {
 			contract.ABI = data
 			break
 		} else {
@@ -193,40 +163,42 @@ func NewContract(address string, blockTime int64) (*common.Contract, error) {
 		}
 	}
 	if len(contract.ABI) == 0 {
+		// panic if etherscan fails
 		glog.Fatalf("Etherscan API failed to return ABI for address %s", address)
 	}
 
+	updateERC20Properties(contract)
+	contractCache.created[address] = contract
+	contractCache.contracts[address] = contract
+
 	if err := ParseABI(contract); err != nil {
-		// cache contract w/o ABI so won't try again
+		if glog.V(2) {
+			glog.Info("Faied to parse ABI", err)
+		}
+
+		// do not store invalid ABI
 		contract.ABI = ""
-		contractCache[address] = contract
 		setContractErrorTime(contract, blockTime)
 		return nil, errors.Wrapf(err, "Invalid ABI for address %s", address)
-	}
-
-	updateERC20Properties(contract)
-	contractCache[address] = contract
-	if err := insertData(contract); err != nil {
-		glog.Warningf("Failed to insert contract %s: %s", address, err.Error())
 	}
 
 	if glog.V(1) {
 		glog.Infof("Created new contract %s Symbol %s methods=%d events=%d", address, contract.Symbol, len(contract.Methods), len(contract.Events))
 	}
-	return contract, nil
-}
 
-// round specified unix time to start of the UTC date
-// if arg is 0, use current system time
-func roundToUTCDate(sec int64) int64 {
-	var t time.Time
-	if sec > 0 {
-		t = time.Unix(sec, 0).UTC()
-	} else {
-		t = time.Now().UTC()
+	if len(contractCache.created) >= 200 {
+		// store batch of 200 contracts in database
+		//fmt.Println("Save new contracts", len(contractCache.contracts), len(contractCache.created))
+		if err := redshift.InsertContracts(contractCache.created); err != nil {
+			// panic if failed to save contracts
+			glog.Fatalf("Failed to save %d contracts: %v", len(contractCache.created), err)
+		}
+		if glog.V(1) {
+			glog.Infof("Saved %d contracts", len(contractCache.created))
+		}
+		contractCache.created = make(map[string]*common.Contract)
 	}
-	d := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
-	return d.Unix()
+	return contract, nil
 }
 
 func ParseABI(c *common.Contract) error {
@@ -262,7 +234,7 @@ func ParseABI(c *common.Contract) error {
 func updateERC20Properties(c *common.Contract) {
 	if client := GetEthereumClient(); client != nil {
 		// try to set ERC token properties
-		token := erc777.NewERC777(web3.HexToAddress(c.Address), client)
+		token := erc777.NewERC777(web3.HexToAddress(c.Address), econ.WithJsonRPC(client.Eth()))
 		if dec, err := token.Decimals(); err == nil {
 			c.Decimals = dec
 		}
@@ -273,16 +245,16 @@ func updateERC20Properties(c *common.Contract) {
 			c.Symbol = symbol
 		}
 		if totalSupply, err := token.TotalSupply(); err == nil {
-			c.TotalSupply = totalSupply
+			c.TotalSupply = common.BigIntToFloat(totalSupply)
 		}
 	}
 }
 
 // remove cached contract last accessed earlier than minAccessTime
 func CleanupContractCache(minAccessTime int64) {
-	for k, v := range contractCache {
-		if v.LastEventTime < minAccessTime {
-			delete(contractCache, k)
+	for k, v := range contractCache.contracts {
+		if v.LastEventDate < minAccessTime {
+			delete(contractCache.contracts, k)
 		}
 	}
 }
@@ -295,7 +267,7 @@ type DecodedData struct {
 
 func DecodeTransactionInput(input []byte, address string, blockTime int64) (*DecodedData, error) {
 	methodID := hex.EncodeToString(input[:4])
-	method, ok := standardMethods[methodID]
+	method, ok := contractCache.stdMethods[methodID]
 	if !ok {
 		// find contract method
 		contract, err := GetContract(address, blockTime)
@@ -352,7 +324,7 @@ func DecodeEventData(wlog *web3.Log, blockTime int64) (*DecodedData, error) {
 	var ok bool
 	var data map[string]interface{}
 
-	if event, ok = standardEvents[eventID]; ok {
+	if event, ok = contractCache.stdEvents[eventID]; ok {
 		// try to parse w/ standard event
 		var err error
 		if data, err = event.ParseLog(wlog); err != nil {

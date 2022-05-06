@@ -21,7 +21,7 @@ import (
 	clickhouse "github.com/mailru/go-clickhouse"
 	"github.com/open-dovetail/eth-track/common"
 	"github.com/pkg/errors"
-	"github.com/umbracle/go-web3"
+	web3 "github.com/umbracle/ethgo"
 )
 
 type ClickHouseConnection struct {
@@ -308,8 +308,7 @@ func QueryContracts(recentDays int) (*sql.Rows, error) {
 	glog.Infof("query contracts used in recent %d days", recentDays)
 	evtDt := time.Now().Add(time.Duration(-recentDays*24) * time.Hour)
 	sql := fmt.Sprintf(`SELECT
-			Address, Name, Symbol, Decimals, TotalSupply, UpdatedDate,
-			StartEventDate, LastEventDate, LastErrorTime, ABI
+			Address, Name, Symbol, Decimals, TotalSupply, LastEventDate, LastErrorDate, ABI
 		FROM contracts
 		WHERE LastEventDate > '%s'`, evtDt.Format("2006-01-02"))
 	rows, err := db.Query(sql)
@@ -330,10 +329,8 @@ func QueryContract(address string) (*common.Contract, error) {
 			Symbol,
 			Decimals,
 			TotalSupply,
-			UpdatedDate,
-			StartEventDate,
 			LastEventDate,
-			LastErrorTime,
+			LastErrorDate,
 			ABI
 		FROM contracts
 		WHERE Address = ?`, address[2:])
@@ -349,34 +346,28 @@ func QueryContract(address string) (*common.Contract, error) {
 	if rows.Next() {
 		contract := &common.Contract{Address: address}
 
-		var totalSupply float64
 		// clickhouse stores date w/o timezone, and
 		// go-clickhouse dataparser.go parses query result using UTC by default
 		// Note: parser timezone can be overriden in request URL with parameter, e.g. location=UTC,
 		//       which would set time location to time.LoadLocation(loc) - ref go-clickhouse/config.go
-		var updatedTime, startEventTime, lastEventTime, lastErrorTime time.Time
+		var lastEventDate, lastErrorDate time.Time
 
 		if err := rows.Scan(
 			&contract.Name,
 			&contract.Symbol,
 			&contract.Decimals,
-			&totalSupply,
-			&updatedTime,
-			&startEventTime,
-			&lastEventTime,
-			&lastErrorTime,
+			&contract.TotalSupply,
+			&lastEventDate,
+			&lastErrorDate,
 			&contract.ABI,
 		); err != nil {
 			return nil, errors.Wrapf(err, "Failed to parse query result for %s", address)
 		}
 
-		contract.TotalSupply = floatToBigInt(totalSupply)
-		contract.UpdatedTime = updatedTime.Unix()
-		contract.StartEventTime = startEventTime.Unix()
-		contract.LastEventTime = lastEventTime.Unix()
-		contract.LastErrorTime = lastErrorTime.Unix()
+		contract.LastEventDate = lastEventDate.Unix()
+		contract.LastErrorDate = lastErrorDate.Unix()
 		if glog.V(2) {
-			glog.Infoln("Query contract", contract.Address, contract.Symbol, contract.TotalSupply, contract.UpdatedTime)
+			glog.Infoln("Query contract", contract.Address, contract.Symbol, contract.TotalSupply, contract.LastEventDate)
 			glog.Infoln("contract ABI", contract.ABI)
 		}
 		return contract, nil
@@ -496,13 +487,11 @@ func (t *ClickHouseTransaction) prepareContractStmt() error {
 				Symbol,
 				Decimals,
 				TotalSupply,
-				UpdatedDate,
-				StartEventDate,
 				LastEventDate,
-				LastErrorTime,
+				LastErrorDate,
 				ABI
 			) VALUES (
-				?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+				?, ?, ?, ?, ?, ?, ?, ?
 			)`)
 		if err != nil {
 			return err
@@ -526,11 +515,9 @@ func (t *ClickHouseTransaction) InsertContract(contract *common.Contract) error 
 		contract.Name,
 		contract.Symbol,
 		contract.Decimals,
-		bigIntToFloat(contract.TotalSupply),
-		clickhouse.Date(secondsToDateTime(contract.UpdatedTime)),
-		clickhouse.Date(secondsToDateTime(contract.StartEventTime)),
-		clickhouse.Date(secondsToDateTime(contract.LastEventTime)),
-		secondsToDateTime(contract.LastErrorTime),
+		contract.TotalSupply,
+		clickhouse.Date(secondsToDateTime(contract.LastEventDate)),
+		clickhouse.Date(secondsToDateTime(contract.LastErrorDate)),
 		contract.ABI,
 	)
 	return err

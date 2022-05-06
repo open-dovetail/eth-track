@@ -19,10 +19,8 @@ CREATE TABLE ethdb.contracts
     `Symbol` String NULL,
     `Decimals` UInt8,
     `TotalSupply` Float64,
-    `UpdatedDate` Date,
-    `StartEventDate` Date,
     `LastEventDate` Date,
-    `LastErrorTime` DateTime,
+    `LastErrorDate` Date,
     `ABI` String
 ) ENGINE = ReplacingMergeTree()
 ORDER BY (Address);

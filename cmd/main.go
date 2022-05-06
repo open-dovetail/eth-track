@@ -1,36 +1,33 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"os"
 	"os/signal"
-	"sync"
 	"time"
 
 	"github.com/golang/glog"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/pkg/errors"
 
 	"github.com/open-dovetail/eth-track/common"
 	"github.com/open-dovetail/eth-track/proc"
-	"github.com/open-dovetail/eth-track/store"
+	"github.com/open-dovetail/eth-track/redshift"
 )
 
 type Config struct {
-	nodeURL         string // Ethereum node URL
-	apiKey          string // etherscan API key
-	etherscanDelay  int    // delay of consecutive etherscan API invocation in ms
-	blockDelay      int    // blockchain height delay for last confirmed block
-	blockBatchSize  int    // number of blocks to process per db commit
-	maxBatches      int    // max number of batches to process
-	statusBatchSize int    // number of rejected tx per db insert
-	statusIntHours  int    // interval hours for updating tx status
-	command         string // newTx, oldTx, or rejectTx
-	dbURL           string // clickhouse URL
-	dbName          string // clickhouse database name
-	dbRootCert      string // root certificate file for HTTPS connection
-	dbUser          string // clickhouse user name
-	dbPassword      string // clickhouse user password
+	nodeURL        string // Ethereum node URL
+	apiKey         string // etherscan API key
+	etherscanDelay int    // delay of consecutive etherscan API invocation in ms
+	blockDelay     int    // blockchain height delay for last confirmed block
+	threads        int    // number of threads for processing blocks
+	batchSize      int    // size of block interval per worker job
+	awsProfile     string // profile name for AWS user
+	awsRegion      string // AWS region for redshift server
+	awsSecret      string // AWS secret alias for redshift connection
+	awsRedshift    string // redshift DB name
 }
 
 var config = &Config{}
@@ -41,16 +38,12 @@ func init() {
 	flag.StringVar(&config.apiKey, "apiKey", "", "Etherscan API key")
 	flag.IntVar(&config.etherscanDelay, "etherscanDelay", 350, "delay in millis between etherscan API calls")
 	flag.IntVar(&config.blockDelay, "blockDelay", 12, "blockchain height delay for last confirmed block")
-	flag.IntVar(&config.blockBatchSize, "blockBatchSize", 40, "number of blocks to process per db commit")
-	flag.IntVar(&config.maxBatches, "maxBatches", 100, "max number of batches to process")
-	flag.IntVar(&config.statusBatchSize, "statusBatchSize", 100, "number of rejected tx per db insert")
-	flag.IntVar(&config.statusIntHours, "statusIntHours", 12, "interval hours per thread for updating tx status")
-	flag.StringVar(&config.command, "command", "newTx", "newTx or oldTx to decode transactions; or rejectTx to update transaction status")
-	flag.StringVar(&config.dbURL, "dbURL", "http://127.0.0.1:8123", "ClickHouse connection URL")
-	flag.StringVar(&config.dbName, "dbName", "ethdb", "ClickHouse database name")
-	flag.StringVar(&config.dbRootCert, "dbRootCert", "", "ClickHouse server root CA file name for HTTPS connection")
-	flag.StringVar(&config.dbUser, "dbUser", "default", "ClickHouse database username")
-	flag.StringVar(&config.dbPassword, "dbPassword", "clickhouse", "ClickHouse database user password")
+	flag.IntVar(&config.threads, "threads", 5, "number of threads for processing blocks")
+	flag.IntVar(&config.batchSize, "batchSize", 100, "size of block interval per worker job")
+	flag.StringVar(&config.awsProfile, "profile", "default", "profile name for AWS user")
+	flag.StringVar(&config.awsRegion, "region", "us-west-2", "AWS region for redshift server")
+	flag.StringVar(&config.awsSecret, "secret", "dev/ethdb/Redshift", "AWS secret alias for redshift connection")
+	flag.StringVar(&config.awsRedshift, "redshift", "ethdb", "Redshift database name")
 }
 
 // check env variables, which overrides the commandline input
@@ -61,20 +54,17 @@ func envOverride() {
 	if v, ok := os.LookupEnv("ETHERSCAN_APIKEY"); ok && v != "" {
 		config.apiKey = v
 	}
-	if v, ok := os.LookupEnv("CLICKHOUSE_URL"); ok && v != "" {
-		config.dbURL = v
+	if v, ok := os.LookupEnv("AWS_PROFILE"); ok && v != "" {
+		config.awsProfile = v
 	}
-	if v, ok := os.LookupEnv("CLICKHOUSE_DB"); ok && v != "" {
-		config.dbName = v
+	if v, ok := os.LookupEnv("AWS_REGION"); ok && v != "" {
+		config.awsRegion = v
 	}
-	if v, ok := os.LookupEnv("CLICKHOUSE_USER"); ok && v != "" {
-		config.dbUser = v
+	if v, ok := os.LookupEnv("AWS_SECRET"); ok && v != "" {
+		config.awsSecret = v
 	}
-	if v, ok := os.LookupEnv("CLICKHOUSE_PASSWORD"); ok && v != "" {
-		config.dbPassword = v
-	}
-	if v, ok := os.LookupEnv("CLICKHOUSE_ROOTCA"); ok && v != "" {
-		config.dbRootCert = v
+	if v, ok := os.LookupEnv("AWS_REDSHIFT"); ok && v != "" {
+		config.awsRedshift = v
 	}
 
 	// Google log setting
@@ -96,17 +86,7 @@ func envOverride() {
 			flag.Lookup("logtostderr").Value.Set("true")
 		}
 	}
-
-	// default clickhouse config
-	if len(config.dbName) == 0 {
-		config.dbName = "default"
-	}
-	if len(config.dbUser) == 0 {
-		config.dbUser = "default"
-	}
 }
-
-var done = false
 
 // Turn on verbose logging using option -v 2
 // Log to stderr using option -logtostderr or set env GLOG_logtostderr=true
@@ -114,479 +94,181 @@ var done = false
 func main() {
 	// parse command-line args
 	flag.Parse()
+	// override config with env vars
+	envOverride()
 
 	// initialize connections
 	if err := connect(); err != nil {
-		glog.Fatalf("Failed initialization: %+v", err)
+		glog.Fatalf("Failed initialization of connections: %+v", err)
 	}
 
-	if config.command != "rejectTx" {
-		proc.CacheContracts(30)
+	// initialize block progress from db
+	if _, err := redshift.GetBlockCache(); err != nil {
+		glog.Fatalf("Failed initialization of block cache: %+v", err)
 	}
 
-	if config.command == "oldTx" {
-		processOldBlocks()
-	} else if config.command == "newTx" {
-		processNewBlocks()
-	} else if config.command == "rejectTx" {
-		ch := make(chan os.Signal)
-		signal.Notify(ch, os.Interrupt, os.Kill)
-		go listenForShutdown(ch)
-		for !done {
-			// loop until manual interruption
-			processTxStatus()
-		}
-	} else if config.command == "default" {
-		ch := make(chan os.Signal)
-		signal.Notify(ch, os.Interrupt, os.Kill)
-		go listenForShutdown(ch)
-		for !done {
-			// loop until manual interruption
-			processNewBlocks()
-			processOldBlocks()
-		}
-	} else {
-		glog.Fatalf("command '%s' is not supported", config.command)
+	// register os interrupt signal
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, os.Kill)
+
+	// start workers
+	job := make(chan redshift.Interval, config.threads)
+	g, ctx := errgroup.WithContext(context.Background())
+	for i := 0; i < config.threads; i++ {
+		pid := i
+		g.Go(func() error {
+			return work(pid, job, sig, ctx)
+		})
 	}
 
-	if err := store.GetDBConnection().Close(); err != nil {
-		glog.Errorf("Failed to close db connection: %s", err.Error())
+	// start scheduler
+	g.Go(func() error {
+		return schedule(job, sig, ctx)
+	})
+
+	// wait for scheduler and all workers to exit
+	if err := g.Wait(); err != nil {
+		glog.Infof("Failed from a processing thread: %v", err)
 	}
 	glog.Flush()
 }
 
-func listenForShutdown(ch <-chan os.Signal) {
-	<-ch
-	glog.Info("Interrupt received ...")
-	done = true
-}
-
-// initialize connections
+// initialize connections of Ethereum, etherscan and redshift
 func connect() error {
-	// override config with env vars
-	envOverride()
-
 	// initialize ethereum node client
 	if _, err := proc.NewEthereumClient(config.nodeURL); err != nil {
 		return errors.Wrapf(err, "Failed to connect to ethereum node %s", config.nodeURL)
 	}
+	proc.SetBlockDelay(config.blockDelay)
 
 	// initialize etherscan api connection
-	proc.NewEtherscanAPI(config.apiKey, config.etherscanDelay)
+	proc.ConfigEtherscan(config.apiKey, config.etherscanDelay)
 	dai := "0x6b175474e89094c44da98b954eedeac495271d0f"
-	if _, err := proc.GetEtherscanAPI().FetchABI(dai); err != nil {
+	if _, err := proc.FetchABI(dai, 0); err != nil {
 		return errors.Wrapf(err, "Failed to invoke etherscan API with key %s", config.apiKey)
 	}
 
-	// initialize clickhouse db connection
-	params := make(map[string]string)
-	if config.dbUser != "default" {
-		params["user"] = config.dbUser
+	// initialize redshift db connection
+	secret, err := redshift.GetAWSSecret(config.awsSecret, config.awsProfile, config.awsRegion)
+	if err != nil {
+		return errors.Wrapf(err, "Failed to get redshift secret for profile %s", config.awsProfile)
 	}
-	if len(config.dbPassword) > 0 {
-		params["password"] = config.dbPassword
+	poolSize := 2 * config.threads
+	if poolSize < 10 {
+		poolSize = 10
 	}
-	if glog.V(2) {
-		params["debug"] = "1"
-	}
-	if _, err := store.NewClickHouseConnection(config.dbURL, config.dbName, config.dbRootCert, params); err != nil {
-		return errors.Wrapf(err, "Failed to connect to clickhouse db at %s/%s", config.dbURL, config.dbName)
+	if _, err := redshift.Connect(secret, config.awsRedshift, poolSize); err != nil {
+		return errors.Wrapf(err, "Failed to connect to redshift db %s", config.awsRedshift)
 	}
 	return nil
 }
 
-// process blocks older than the earliest block in db
-func processOldBlocks() {
-	earliest, _ := store.QueryBlock(0, false)
-	if earliest == nil {
-		earliest, _ = decodeConfirmedBlock(0)
+// continuously create block processing jobs until os interrupt is received
+// each job is created as a block interval on the output channel
+func schedule(job chan<- redshift.Interval, sig <-chan os.Signal, ctx context.Context) error {
+	glog.Info("scheduler started")
+	// schedule initial block gaps from database
+	blockCache, _ := redshift.GetBlockCache()
+	gaps := blockCache.GetIntervalGaps()
+	glog.Info("schedule to fill block gaps in database")
+	for _, gap := range gaps {
+		putBatchJob(gap, job)
 	}
-	glog.Infof("start processing earlier blocks from %d - %s for %d batches", earliest.Number, earliest.ParentHash.String(), config.maxBatches)
-	lastBlock := batchLoop(earliest, nil, config.maxBatches)
-	if lastBlock == nil {
-		// no block processed
-		return
-	}
-
-	// update progress
-	progress, _ := store.QueryProgress(common.AddTransaction, true)
-	if progress != nil {
-		progress.LowBlock = lastBlock.Number
-		progress.LowBlockTime = lastBlock.BlockTime
-	} else {
-		latest, _ := store.QueryBlock(0, true)
-		progress = &common.Progress{
-			ProcessID:    common.AddTransaction,
-			HiBlock:      latest.Number,
-			HiBlockTime:  latest.BlockTime,
-			LowBlock:     lastBlock.Number,
-			LowBlockTime: lastBlock.BlockTime,
-		}
-	}
-	glog.Infof("update progress to blocks between %d and %d", progress.HiBlock, progress.LowBlock)
-	if err := store.MustGetDBTx().InsertProgress(progress); err != nil {
-		glog.Errorf("Failed to update progress: %+v", err)
-		return
-	}
-	if err := store.MustGetDBTx().CommitTx(); err != nil {
-		glog.Errorf("Failed to commit old blocks: %+v", err)
-	}
-}
-
-// process blocks newer than the most recent block in db
-func processNewBlocks() {
-	latest, _ := store.QueryBlock(0, true)
-	fillBlockGap(latest)
-
-	// process new blocks on chain
-	var endBlock uint64
-	if latest != nil {
-		endBlock = latest.Number
-	}
-	if block, _ := decodeConfirmedBlock(endBlock); block != nil {
-		if latest != nil {
-			glog.Infof("start processing recent blocks between %d and %d", block.Number, latest.Number)
-		} else {
-			glog.Infof("start processing from the latest confirmed block %d", block.Number)
-		}
-		lastBlock := batchLoop(block, latest, config.maxBatches)
-		if lastBlock == nil {
-			// no block processed
-			return
-		}
-
-		// update progress
-		var progress *common.Progress
-		if latest == nil {
-			progress = &common.Progress{
-				ProcessID:    common.AddTransaction,
-				HiBlock:      block.Number,
-				HiBlockTime:  block.BlockTime,
-				LowBlock:     lastBlock.Number,
-				LowBlockTime: lastBlock.BlockTime,
-			}
-		} else if latest.Number+1 >= lastBlock.Number {
-			earliest, _ := store.QueryBlock(0, false)
-			progress = &common.Progress{
-				ProcessID:    common.AddTransaction,
-				HiBlock:      block.Number,
-				HiBlockTime:  block.BlockTime,
-				LowBlock:     earliest.Number,
-				LowBlockTime: earliest.BlockTime,
-			}
-		}
-		if progress != nil {
-			glog.Infof("update progress to blocks between %d and %d", progress.HiBlock, progress.LowBlock)
-			if err := store.MustGetDBTx().InsertProgress(progress); err != nil {
-				glog.Errorf("Failed to update progress: %+v", err)
-				return
-			}
-			if err := store.MustGetDBTx().CommitTx(); err != nil {
-				glog.Errorf("Failed to commit new blocks: %+v", err)
-			}
-		}
-	}
-}
-
-// check transaction status, and remove rejected transactions
-func processTxStatus() {
-	glog.Info("Check transaction status ...")
-	intervals, progress := txStatusIntervals()
-	if len(intervals) == 0 {
-		glog.Warning("No new processed transactions, so do nothing")
-		time.Sleep(120 * time.Second)
-		return
-	}
-
-	// update status using multiple threads
-	var wg sync.WaitGroup
-	for _, v := range intervals {
-		wg.Add(1)
-		go func(val timeInterval) {
-			rejectTransactions(val.startTime, val.endTime)
-			glog.Infof("updated transactions in period %s %s", val.startTime, val.endTime)
-			wg.Done()
-		}(v)
-	}
-	wg.Wait()
-
-	if err := store.MustGetDBTx().InsertProgress(progress); err != nil {
-		glog.Errorf("Failed to update status progress: %s", err.Error())
-		return
-	}
-	glog.Infof("updated progress for blocks between %d and %d", progress.HiBlock, progress.LowBlock)
-
-	if err := store.MustGetDBTx().CommitTx(); err != nil {
-		glog.Errorf("Failed to commit status updates: %+v", err)
-	}
-}
-
-type timeInterval struct {
-	startTime time.Time
-	endTime   time.Time
-}
-
-// split time interval into intervals of config.statusIntHours
-func intervalSlice(startTime, endTime time.Time) []timeInterval {
-	var intervals []timeInterval
-	lowTime := startTime
-	for lowTime.Before(endTime) {
-		upTime := lowTime.Add(time.Duration(config.statusIntHours) * time.Hour)
-		if endTime.Before(upTime) {
-			upTime = endTime
-		}
-		intervals = append(intervals, timeInterval{
-			startTime: lowTime,
-			endTime:   upTime,
-		})
-		lowTime = upTime
-	}
-	return intervals
-}
-
-// return slice of time intervals for tx status check
-func txStatusIntervals() ([]timeInterval, *common.Progress) {
-	var intervals []timeInterval
-	processed, _ := store.QueryProgress(common.AddTransaction, true)
-	if processed != nil {
-		lowProcessed, _ := store.QueryProgress(common.AddTransaction, false)
-		if lowProcessed.LowBlock < processed.LowBlock {
-			processed.LowBlock = lowProcessed.LowBlock
-			processed.LowBlockTime = lowProcessed.LowBlockTime
-		}
-	} else {
-		// no transaction processed
-		return intervals, nil
-	}
-	progress, _ := store.QueryProgress(common.SetStatus, true)
-	if progress != nil {
-		lowProgress, _ := store.QueryProgress(common.SetStatus, false)
-		if lowProgress.LowBlock < progress.LowBlock {
-			progress.LowBlock = lowProgress.LowBlock
-			progress.LowBlockTime = lowProgress.LowBlockTime
-		}
-	}
-	if progress == nil {
-		// first time for processing tx status
-		startTime := time.Unix(processed.LowBlockTime, 0).UTC()
-		endTime := time.Unix(processed.HiBlockTime, 0).UTC().Add(time.Second)
-		intervals = intervalSlice(startTime, endTime)
-		progress = &common.Progress{
-			ProcessID:    common.SetStatus,
-			LowBlock:     processed.LowBlock,
-			LowBlockTime: processed.LowBlockTime,
-			HiBlock:      processed.HiBlock,
-			HiBlockTime:  processed.HiBlockTime,
-		}
-	} else if progress.HiBlock < processed.HiBlock {
-		startTime := time.Unix(progress.HiBlockTime, 0).UTC().Add(time.Second)
-		endTime := time.Unix(processed.HiBlockTime, 0).UTC().Add(time.Second)
-		intervals = intervalSlice(startTime, endTime)
-		progress.HiBlock = processed.HiBlock
-		progress.HiBlockTime = processed.HiBlockTime
-		if progress.LowBlock > processed.LowBlock {
-			startTime := time.Unix(processed.LowBlockTime, 0).UTC()
-			endTime := time.Unix(progress.LowBlockTime, 0).UTC()
-			v := intervalSlice(startTime, endTime)
-			intervals = append(intervals, v...)
-			progress.LowBlock = processed.LowBlock
-			progress.LowBlockTime = processed.LowBlockTime
-		}
-	} else if progress.LowBlock > processed.LowBlock {
-		startTime := time.Unix(processed.LowBlockTime, 0).UTC()
-		endTime := time.Unix(progress.LowBlockTime, 0).UTC()
-		intervals = intervalSlice(startTime, endTime)
-		progress.LowBlock = processed.LowBlock
-		progress.LowBlockTime = processed.LowBlockTime
-	}
-	return intervals, progress
-}
-
-// update transaction status for all transactions in a specified time range
-func rejectTransactions(startTime, endTime time.Time) {
-	rows, err := store.QueryTransactions(startTime, endTime)
-	if err != nil {
-		glog.Fatalf("Failed query transactions between %s and %s: %+v", startTime, endTime, err)
-	}
-	defer rows.Close()
-
-	total := 0
-	iter := 0
-	toArray := make([]string, 0, config.statusBatchSize)
-	hashArray := make([]string, 0, config.statusBatchSize)
-	for rows.Next() {
-		var (
-			to, hash    string
-			blockTime   time.Time
-			blockNumber uint64
-			status      int8
-		)
-		if err := rows.Scan(
-			&to,
-			&blockTime,
-			&hash,
-			&blockNumber,
-			&status,
-		); err != nil {
-			glog.Fatalf("Failed to read query result %+v", err)
-		}
-		iter++
-		if iter%1000 == 0 {
-			glog.Infof("[%d] %d %d %s %d", iter, len(toArray), status, hash, blockNumber)
-		}
-		if status == 1 && len(to) > 0 {
-			if state, err := proc.GetTransactionStatus("0x" + hash); err != nil {
-				glog.Errorf("Failed to get transaction status: %s", err.Error())
-			} else if !state {
-				if glog.V(1) {
-					glog.Infof("reject transaction 0x%s", hash)
-				}
-				toArray = append(toArray, to)
-				hashArray = append(hashArray, hash)
-			}
-
-			if len(toArray) >= config.statusBatchSize {
-				glog.Infof("Reject %d transactions including block %d", len(toArray), blockNumber)
-				total += len(toArray)
-				if err := store.RejectTransactions(toArray, hashArray); err != nil {
-					glog.Errorf("Failed to update db for %d rejected transations: %s", len(toArray), err.Error())
-				}
-				toArray = make([]string, 0, config.statusBatchSize)
-				hashArray = make([]string, 0, config.statusBatchSize)
-			}
-		}
-	}
-	if len(toArray) > 0 {
-		total += len(toArray)
-		if err := store.RejectTransactions(toArray, hashArray); err != nil {
-			glog.Errorf("Failed to update db for %d rejected transations: %s", len(toArray), err.Error())
-		}
-	}
-	glog.Infof("Rejected %d transactions in period [%s, %s)", total, startTime, endTime)
-}
-
-// process missing blocks between recorded top blocks and HiBlock in grogress table
-func fillBlockGap(latest *common.Block) {
-	if latest == nil {
-		// blocks table is empty, so no gap
-		return
-	}
-	progress, _ := store.QueryProgress(common.AddTransaction, true)
-	if progress == nil {
-		// nothing recorded in progress, so no gap
-		return
-	}
-	if latest.Number <= progress.HiBlock+1 {
-		// recorded blocks is lower than progress, so no gap
-		return
-	}
-
-	// fill in possible gap, then update progress
-	gap, _ := store.QueryBlock(progress.HiBlock, true)
-	if gap.Number > progress.HiBlock+1 {
-		glog.Infof("start filling block gap between %d and %d", gap.Number, progress.HiBlock)
-		hiBlock, _ := proc.GetBlockByNumber(progress.HiBlock)
-		lastBlock := batchLoop(gap, hiBlock, 0)
-		if lastBlock == nil || lastBlock.Number > progress.HiBlock+1 {
-			// unexpected early exit of gap-filling loop
-			glog.Fatalf("gap between %d and %d is not filled", progress.HiBlock, lastBlock.Number)
-		}
-	}
-
-	// gap filled, so update progress
-	progress.HiBlock = latest.Number
-	progress.HiBlockTime = latest.BlockTime
-	glog.Infof("update progress to HiBlock %d, LowBlock %d", progress.HiBlock, progress.LowBlock)
-	if err := store.MustGetDBTx().InsertProgress(progress); err != nil {
-		glog.Errorf("Failed to update progress: %+v", err)
-		return
-	}
-	if err := store.MustGetDBTx().CommitTx(); err != nil {
-		glog.Errorf("Failed to commit gap transactions: %+v", err)
-	}
-}
-
-// process blocks from the parent of a start block backwards up to before the end block.
-// if end block is not specified, exit when maxBatch loops are complete
-func batchLoop(startBlock, endBlock *common.Block, maxBatch int) *common.Block {
-	if startBlock == nil {
-		// start block must be specified
-		return nil
-	}
-	if endBlock != nil && endBlock.Number+1 >= startBlock.Number {
-		// nothing to process before end block
-		return nil
-	}
-
-	startTime := time.Now().Unix()
-	lastBlock := startBlock
-	var err error
-
-	i := 0
 	for {
-		i++
-		loopStart := time.Now().Unix()
-		lastBlock, err = decodeBatch(lastBlock, endBlock, config.blockBatchSize)
-		if err != nil {
-			glog.Fatalf("Failed block batch %+v", err)
-		}
-		loopEnd := time.Now().Unix()
-		glog.Infof("[%d] Block %d - Loop elapsed: %ds; Total elapsed: %ds", i, lastBlock.Number, (loopEnd - loopStart), (loopEnd - startTime))
-		if endBlock == nil && i > maxBatch {
-			// end block is not specified, so complete max number of batches
-			break
-		}
-		if lastBlock == nil {
-			// no block is processed, so quit here
-			break
-		}
-		if endBlock != nil && (lastBlock.Number <= endBlock.Number+1 || lastBlock.ParentHash.String() == endBlock.Hash) {
-			// reached highest blocks already in database, so quit here
-			break
+		select {
+		case <-ctx.Done():
+			glog.Infof("scheduler returns %v", ctx.Err())
+			return ctx.Err()
+		case <-sig:
+			glog.Info("scheduler received os interrupt")
+			return errors.New("interrupted")
+		default:
+			// schedule new confirmed blocks
+			lastBlock, err := proc.LastConfirmedBlock()
+			if err != nil {
+				glog.Infof("scheduler returns error to get last confirmed block: %+v", err)
+				return err
+			}
+			hiBlock := lastBlock.Number
+			scheduled := blockCache.GetScheduledBlocks()
+			if scheduled.Low == 0 || scheduled.High == 0 {
+				// no block has been processed, so schedule all new blocks
+				lowBlock := hiBlock - uint64(config.threads*config.batchSize-1)
+				glog.Infof("schedule new blocks of range (%d, %d]", lowBlock, hiBlock)
+				v := redshift.Interval{Low: lowBlock, High: hiBlock}
+				putBatchJob(v, job)
+				blockCache.SetScheduledBlocks(v)
+				continue
+			}
+			if hiBlock > scheduled.High {
+				glog.Infof("schedule new blocks of range (%d, %d]", scheduled.High, hiBlock)
+				putBatchJob(redshift.Interval{
+					Low:  scheduled.High + 1,
+					High: hiBlock,
+				}, job)
+			}
+			lowBlock := scheduled.Low - uint64(config.threads*config.batchSize)
+			glog.Infof("schedule old blocks of range [%d, %d)", lowBlock, scheduled.Low)
+			putBatchJob(redshift.Interval{
+				Low:  lowBlock,
+				High: scheduled.Low - 1,
+			}, job)
+			blockCache.SetScheduledBlocks(redshift.Interval{Low: lowBlock, High: hiBlock})
 		}
 	}
-	glog.Flush()
-	return lastBlock
 }
 
-// decode latest confirmed block on chain.
-// do nothing if refBlock is later than the latest confirmed block.
-func decodeConfirmedBlock(refBlock uint64) (lastBlock *common.Block, err error) {
-	block, err := proc.LastConfirmedBlock(config.blockDelay)
-	if err != nil {
-		return nil, errors.Wrapf(err, "Failed to retrieve last confirmed block")
+// split block interval into batch jobs of max interval of config.batchSize
+func putBatchJob(v redshift.Interval, job chan<- redshift.Interval) {
+	low := v.Low
+	hi := low + uint64(config.batchSize)
+	for hi < v.High {
+		job <- redshift.Interval{Low: low, High: hi}
+		low = hi + 1
+		hi = low + uint64(config.batchSize-1)
 	}
-	if block.Number <= refBlock {
-		glog.Infof("confirmed block %d is earlier than ref block %d", block.Number, refBlock)
-		return nil, nil
+	if low <= v.High {
+		job <- redshift.Interval{Low: low, High: v.High}
 	}
-	// decode the last confirmed block
-	return proc.DecodeBlock(block)
 }
 
-func decodeBatch(startBlock, endBlock *common.Block, batchSize int) (lastBlock *common.Block, err error) {
-
-	lastBlock = startBlock
-
-	// decode batch of parent blocks
-	i := 0
+// continuously receive jobs from input channel.
+// returns error if process failed or ctx closed by other worker when used with sync.errgroup.
+func work(gid int, job <-chan redshift.Interval, sig <-chan os.Signal, ctx context.Context) error {
+	glog.Info("started worker", gid)
+	blockCache, _ := redshift.GetBlockCache()
 	for {
-		i++
-		if batchSize > 0 && i > batchSize {
-			glog.Infof("loop reached max batch size %d", i)
-			break
-		}
-		if endBlock != nil && (lastBlock.Number <= endBlock.Number+1 || lastBlock.ParentHash.String() == endBlock.Hash) {
-			glog.Infof("loop reached block %d %s compared to end-block %d %s", lastBlock.Number, lastBlock.ParentHash.String(), endBlock.Number, endBlock.Hash)
-			break
-		}
-		if lastBlock, err = proc.DecodeBlockByHash(lastBlock.ParentHash); err != nil {
-			return lastBlock, errors.Wrapf(err, "Failed to retrieve parent block %s", lastBlock.ParentHash)
+		select {
+		case <-ctx.Done():
+			// exit when any other worker in errgroup error out
+			glog.Infof("worker %d returns %v", gid, ctx.Err())
+			return ctx.Err()
+		case <-sig:
+			// exit when received os interrupt
+			glog.Infof("worker %d received os interrupt", gid)
+			return errors.New("interrupted")
+		case v := <-job:
+			glog.Infof("worker %d processing block interval [%d, %d]", gid, v.Low, v.High)
+			lastBlock, firstBlock, err := proc.DecodeBlockRange(v.High, v.Low)
+			//lastBlock, firstBlock, err := simulator(v.High, v.Low)
+			if err != nil {
+				glog.Infof("worker %d returns error %v", gid, err)
+				return err
+			}
+			block := lastBlock.Number
+			for firstBlock != nil && block >= firstBlock.Number {
+				blockCache.AddBlock(block)
+				block--
+			}
+			if err := blockCache.SaveNextInterval(); err != nil {
+				glog.Infof("worker %d returns save block cache error %v", gid, err)
+				return err
+			}
 		}
 	}
+}
 
-	if err := store.MustGetDBTx().CommitTx(); err != nil {
-		glog.Errorf("Failed to commit db transaction: %s", err.Error())
-	}
-	return
+func simulator(hiBlock, lowBlock uint64) (lastBlock *common.Block, firstBlock *common.Block, err error) {
+	time.Sleep(time.Second * 2)
+	return &common.Block{Number: hiBlock}, &common.Block{Number: lowBlock}, nil
 }

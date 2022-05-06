@@ -7,29 +7,53 @@ import (
 	"os"
 	"testing"
 
+	"github.com/open-dovetail/eth-track/redshift"
 	"github.com/pkg/errors"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	"github.com/umbracle/go-web3/abi"
 )
 
 // initialize Ethereum node connection
 func setup() error {
-	url, ok := os.LookupEnv("ETHEREUM_URL")
-	if !ok {
-		return fmt.Errorf("ETHEREUM_URL env must be defined")
-	}
-	fmt.Println("ETHEREUM_URL:", url)
-
+	// config etherscan connection
 	apiKey, ok := os.LookupEnv("ETHERSCAN_APIKEY")
 	if !ok {
 		return fmt.Errorf("ETHERSCAN_APIKEY env must be defined")
 	}
 	fmt.Println("ETHERSCAN_APIKEY:", apiKey)
+	ConfigEtherscan(apiKey, 350)
 
-	NewEtherscanAPI(apiKey, 350)
+	// config infura etherereum node
+	url, ok := os.LookupEnv("ETHEREUM_URL")
+	if !ok {
+		return fmt.Errorf("ETHEREUM_URL env must be defined")
+	}
+	fmt.Println("ETHEREUM_URL:", url)
 	if _, err := NewEthereumClient(url); err != nil {
 		return errors.Wrapf(err, "Failed to connect to Ethereum node at %s", url)
+	}
+
+	// configure AWS redshift connection
+	profile, ok := os.LookupEnv("AWS_PROFILE")
+	if !ok {
+		profile = "oocto"
+	}
+	region, ok := os.LookupEnv("AWS_REGION")
+	if !ok {
+		region = "us-west-2"
+	}
+	secretName, ok := os.LookupEnv("AWS_SECRET")
+	if !ok {
+		secretName = "dev/ethdb/Redshift"
+	}
+	secret, err := redshift.GetAWSSecret(secretName, profile, region)
+	if err != nil {
+		return errors.Wrapf(err, "Failed to get redshift secret for profile %s", profile)
+	}
+	dbName, ok := os.LookupEnv("AWS_REDSHIFT")
+	if !ok {
+		dbName = "ethdb"
+	}
+	if _, err := redshift.Connect(secret, dbName, 10); err != nil {
+		return errors.Wrapf(err, "Failed to connect to redshift db %s", dbName)
 	}
 	return nil
 }
@@ -41,34 +65,6 @@ func TestMain(m *testing.M) {
 	}
 	fmt.Println("Setup successful")
 	status := m.Run()
+	redshift.Close()
 	os.Exit(status)
-}
-
-func TestEtherscanAPI(t *testing.T) {
-
-	api := GetEtherscanAPI()
-	assert.NotNil(t, api, "Etherscan config should not be nil")
-
-	addrs := []string{
-		"0x6b175474e89094c44da98b954eedeac495271d0f",
-		"0xdac17f958d2ee523a2206206994597c13d831ec7",
-		"0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
-		"0xd569d3cce55b71a8a3f3c418c329a66e5f714431",
-	}
-	expected := [][]int{{22, 3}, {32, 11}, {5, 2}, {0, 0}}
-
-	for i, addr := range addrs {
-		abiData, err := api.FetchABI(addr)
-		require.NoError(t, err, "Error fetching ABI from Etherscan: %s", addr)
-		// fmt.Println("ABI:", abiData)
-		ab, err := abi.NewABI(abiData)
-		if i == 3 {
-			assert.Error(t, err, "ABI is invalid for contract %s", addr)
-			assert.Equal(t, "unknown field type 'error'", err.Error(), "ABI parser error is unknown field type 'error'")
-		} else {
-			assert.NoError(t, err, "Invalid ABI data fetched from Etherscan: %s", addr)
-			assert.Equal(t, expected[i][0], len(ab.Methods), "ABI method count does not match for contract: %s", addr)
-			assert.Equal(t, expected[i][1], len(ab.Events), "ABI event count does not match for contract: %s", addr)
-		}
-	}
 }

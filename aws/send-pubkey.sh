@@ -2,7 +2,7 @@
 
 # send newly generated pubkey to an EC2 instance
 # which is required after generating new key-pair, then 
-# ssh -i ./config/eth-track.pem ec2-user@34.201.218.202
+# ssh -i ./config/eth-track.pem ec2-user@54.198.253.103
 source ./env.sh oocto
 
 aws ec2-instance-connect send-ssh-public-key \

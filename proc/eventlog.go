@@ -3,7 +3,7 @@ package proc
 import (
 	"github.com/golang/glog"
 	"github.com/open-dovetail/eth-track/common"
-	web3 "github.com/umbracle/go-web3"
+	web3 "github.com/umbracle/ethgo"
 )
 
 func DecodeEventLog(wlog *web3.Log, blockTime int64) *common.EventLog {
@@ -17,6 +17,7 @@ func DecodeEventLog(wlog *web3.Log, blockTime int64) *common.EventLog {
 		TxnIndex:    wlog.TransactionIndex,
 		TxnHash:     wlog.TransactionHash.String(),
 		Address:     wlog.Address.String(),
+		Data:        wlog.Data,
 		BlockTime:   blockTime,
 	}
 	// decode only if event topics exist

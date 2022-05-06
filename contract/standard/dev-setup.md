@@ -11,15 +11,15 @@ brew install solidity
 solc --version
 ```
 
-## build go-web3 abigen tool
+## build ethgo abigen tool
 
 ```bash
 cd ~/work/ethereum
-git clone git@github.com:umbracle/go-web3.git
-cd go-web3
-go build -o web3-abigen ./abigen
-mv web3-abigen $GOPATH/bin
-web3-abigen --help
+git clone git@github.com:umbracle/ethgo.git
+cd ethgo/cmd
+go build -o ethgo
+mv ethgo $GOPATH/bin
+ethgo --help
 ```
 
 ## generate abi and standard package using web3-abigen
@@ -29,7 +29,7 @@ Run the following scripts to generate ABI and Go code from public methods and ev
 ```bash
 cd erc777/artifacts
 solc --abi -o . erc777.sol
-web3-abigen -source ERC777.abi -package erc777 -name ERC777 --output ..
+ethgo abigen --source ERC777.abi --package erc777 --output ..
 ```
 
 Do the same for the other standard contracts, i.e., [ERC721](./erc721/artifacts/erc721.sol) and [ERC1155](./erc1155/artifacts/erc1155.sol).
