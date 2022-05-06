@@ -24,13 +24,19 @@ func (c *copyFromContracts) Values() ([]interface{}, error) {
 	v = append(v, contract.TotalSupply)
 	v = append(v, common.SecondsToDateTime(contract.LastEventDate))
 	v = append(v, common.SecondsToDateTime(contract.LastErrorDate))
-	v = append(v, contract.ABI)
+	if len(contract.ABI) > 1024*31 {
+		glog.Warningf("Database ignored large ABI of size %d", len(contract.ABI))
+		v = append(v, "")
+	} else {
+		v = append(v, contract.ABI)
+	}
 	//fmt.Println("Copy contract", v[0])
 	return v, nil
 }
 
 func trunkString(s string, size int) string {
 	if len(s) > size {
+		glog.Warningf("Database truncated string value of size > %d", size)
 		return s[:size]
 	}
 	return s

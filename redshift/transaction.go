@@ -39,7 +39,7 @@ func (c *copyFromTransactions) Values() ([]interface{}, error) {
 			v = append(v, trunkString(transaction.Params[i].Name, 40))
 			s, f := convertNamedValue(transaction.Params[i])
 			if len(s) > 4096 {
-				glog.Warning("truncate string value to 4096 bytes")
+				glog.Warning("Database truncate string value to 4096 bytes")
 				s = s[:4096]
 			}
 			v = append(v, s)
