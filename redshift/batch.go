@@ -32,6 +32,11 @@ func quotedString(str string) string {
 		glog.Warning("Database ignore large string of length ", len(str))
 		return ""
 	}
+	// remove trailing backslash, which will escape quote and result in SQL syntax error
+	for len(str) > 0 && str[len(str)-1:] == "\\" {
+		str = str[:len(str)-1]
+	}
+
 	return "'" + strings.ReplaceAll(str, "'", "''") + "'"
 }
 
