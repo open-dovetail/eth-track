@@ -188,8 +188,8 @@ func NewContract(address string, blockTime int64) (*common.Contract, error) {
 		glog.Infof("Created new contract %s Symbol %s methods=%d events=%d", address, contract.Symbol, len(contract.Methods), len(contract.Events))
 	}
 
-	if len(contractCache.created) >= 50 {
-		// store batch of 50 contracts in database
+	if len(contractCache.created) >= 10 {
+		// store batch of 10 contracts in database
 		//fmt.Println("Save new contracts", len(contractCache.contracts), len(contractCache.created))
 		if err := redshift.InsertContracts(contractCache.created); err != nil {
 			// panic if failed to save contracts
