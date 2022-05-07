@@ -90,15 +90,22 @@ func InsertContract(contract *common.Contract) error {
 	if contract == nil {
 		return nil
 	}
+	abi := contract.ABI
+	if len(abi) > 1024*31 {
+		glog.Warningf("Database ignored large ABI of size %d", len(abi))
+		abi = ""
+	}
+
 	sql := "INSERT INTO eth.contracts (Address, Name, Symbol, Decimals, TotalSupply, LastEventDate, LastErrorDate, ABI) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
-	return db.Exec(sql, common.HexToFixedString(contract.Address, 40),
-		contract.Name,
-		contract.Symbol,
+	return db.Exec(sql,
+		common.HexToFixedString(contract.Address, 40),
+		trunkString(contract.Name, 40),
+		trunkString(contract.Symbol, 40),
 		contract.Decimals,
 		contract.TotalSupply,
 		common.SecondsToDateTime(contract.LastEventDate),
 		common.SecondsToDateTime(contract.LastErrorDate),
-		contract.ABI)
+		abi)
 }
 
 // acquires a connection, fetch one contract by address, then release the connection

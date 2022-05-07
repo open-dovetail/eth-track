@@ -170,7 +170,6 @@ func NewContract(address string, blockTime int64) (*common.Contract, error) {
 	}
 
 	updateERC20Properties(contract)
-	contractCache.created[address] = contract
 	contractCache.contracts[address] = contract
 
 	if err := ParseABI(contract); err != nil {
@@ -180,16 +179,25 @@ func NewContract(address string, blockTime int64) (*common.Contract, error) {
 
 		// do not store invalid ABI
 		contract.ABI = ""
+		contractCache.created[address] = contract
 		setContractErrorTime(contract, blockTime)
 		return nil, errors.Wrapf(err, "Invalid ABI for address %s", address)
 	}
-
 	if glog.V(1) {
 		glog.Infof("Created new contract %s Symbol %s methods=%d events=%d", address, contract.Symbol, len(contract.Methods), len(contract.Events))
 	}
 
-	if len(contractCache.created) >= 10 {
-		// store batch of 10 contracts in database
+	if len(contract.ABI) > 4096 {
+		// insert large ABI to db individually
+		if err := redshift.InsertContract(contract); err != nil {
+			glog.Warningf("Failed to insert contract %s to database: %+v", contract.Address, err)
+		}
+		return contract, nil
+	}
+
+	// store other contracts to db in batches of 50
+	contractCache.created[address] = contract
+	if len(contractCache.created) >= 50 {
 		//fmt.Println("Save new contracts", len(contractCache.contracts), len(contractCache.created))
 		if err := redshift.InsertContracts(contractCache.created); err != nil {
 			// panic if failed to save contracts
