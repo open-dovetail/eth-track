@@ -172,43 +172,46 @@ func NewContract(address string, blockTime int64) (*common.Contract, error) {
 	updateERC20Properties(contract)
 	contractCache.contracts[address] = contract
 
-	if err := ParseABI(contract); err != nil {
+	err := ParseABI(contract)
+	if err != nil {
 		if glog.V(2) {
 			glog.Info("Faied to parse ABI", err)
 		}
 
 		// do not store invalid ABI
 		contract.ABI = ""
-		contractCache.created[address] = contract
-		setContractErrorTime(contract, blockTime)
+		contract.LastErrorDate = common.RoundToUTCDate(blockTime)
+	}
+
+	// insert contract to db
+	if err := redshift.InsertContract(contract); err != nil {
+		glog.Fatalf("Failed to insert contract %s to database: %+v", contract.Address, err)
+	}
+
+	if err != nil {
 		return nil, errors.Wrapf(err, "Invalid ABI for address %s", address)
 	}
 	if glog.V(1) {
 		glog.Infof("Created new contract %s Symbol %s methods=%d events=%d", address, contract.Symbol, len(contract.Methods), len(contract.Events))
 	}
+	return contract, nil
 
-	if len(contract.ABI) > 4096 {
-		// insert large ABI to db individually
-		if err := redshift.InsertContract(contract); err != nil {
-			glog.Warningf("Failed to insert contract %s to database: %+v", contract.Address, err)
+	/*
+		// store other contracts to db in batches of 50
+		contractCache.created[address] = contract
+		if len(contractCache.created) >= 50 {
+			//fmt.Println("Save new contracts", len(contractCache.contracts), len(contractCache.created))
+			if err := redshift.InsertContracts(contractCache.created); err != nil {
+				// panic if failed to save contracts
+				glog.Fatalf("Failed to save %d contracts: %v", len(contractCache.created), err)
+			}
+			if glog.V(1) {
+				glog.Infof("Saved %d contracts", len(contractCache.created))
+			}
+			contractCache.created = make(map[string]*common.Contract)
 		}
 		return contract, nil
-	}
-
-	// store other contracts to db in batches of 50
-	contractCache.created[address] = contract
-	if len(contractCache.created) >= 50 {
-		//fmt.Println("Save new contracts", len(contractCache.contracts), len(contractCache.created))
-		if err := redshift.InsertContracts(contractCache.created); err != nil {
-			// panic if failed to save contracts
-			glog.Fatalf("Failed to save %d contracts: %v", len(contractCache.created), err)
-		}
-		if glog.V(1) {
-			glog.Infof("Saved %d contracts", len(contractCache.created))
-		}
-		contractCache.created = make(map[string]*common.Contract)
-	}
-	return contract, nil
+	*/
 }
 
 func ParseABI(c *common.Contract) error {
