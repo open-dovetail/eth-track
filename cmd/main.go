@@ -176,8 +176,10 @@ func schedule(job chan<- redshift.Interval, sig <-chan os.Signal, ctx context.Co
 	blockCache, _ := redshift.GetBlockCache()
 	gaps := blockCache.GetIntervalGaps()
 	glog.Info("schedule to fill block gaps in database")
+
+	var pendingJobs []redshift.Interval
 	for _, gap := range gaps {
-		putBatchJob(gap, job)
+		pendingJobs = addBatchJob(gap, pendingJobs)
 	}
 	for {
 		select {
@@ -188,53 +190,80 @@ func schedule(job chan<- redshift.Interval, sig <-chan os.Signal, ctx context.Co
 			glog.Info("scheduler received os interrupt")
 			return errors.New("interrupted")
 		default:
-			// schedule new confirmed blocks
-			lastBlock, err := proc.LastConfirmedBlock()
-			if err != nil {
-				glog.Infof("scheduler returns error to get last confirmed block: %+v", err)
-				return err
+			for len(job) < cap(job) {
+				if len(pendingJobs) == 0 {
+					// all pending jobs have been scheduled, so prepare new jobs
+					var err error
+					if pendingJobs, err = prepareJobs(blockCache); err != nil {
+						return err
+					}
+				}
+
+				// send a job since the job channel has more capacity
+				v := pendingJobs[0]
+				pendingJobs = pendingJobs[1:]
+				job <- v
 			}
-			hiBlock := lastBlock.Number
-			scheduled := blockCache.GetScheduledBlocks()
-			if scheduled.Low == 0 || scheduled.High == 0 {
-				// no block has been processed, so schedule all new blocks
-				lowBlock := hiBlock - uint64(config.threads*config.batchSize-1)
-				glog.Infof("schedule new blocks of range (%d, %d]", lowBlock, hiBlock)
-				v := redshift.Interval{Low: lowBlock, High: hiBlock}
-				putBatchJob(v, job)
-				blockCache.SetScheduledBlocks(v)
-				continue
-			}
-			if hiBlock > scheduled.High {
-				glog.Infof("schedule new blocks of range (%d, %d]", scheduled.High, hiBlock)
-				putBatchJob(redshift.Interval{
-					Low:  scheduled.High + 1,
-					High: hiBlock,
-				}, job)
-			}
-			lowBlock := scheduled.Low - uint64(config.threads*config.batchSize)
-			glog.Infof("schedule old blocks of range [%d, %d)", lowBlock, scheduled.Low)
-			putBatchJob(redshift.Interval{
-				Low:  lowBlock,
-				High: scheduled.Low - 1,
-			}, job)
-			blockCache.SetScheduledBlocks(redshift.Interval{Low: lowBlock, High: hiBlock})
+			// wait 1 second for workers to catch up before trying again
+			time.Sleep(time.Second)
 		}
 	}
 }
 
-// split block interval into batch jobs of max interval of config.batchSize
-func putBatchJob(v redshift.Interval, job chan<- redshift.Interval) {
+// prepare the next batch of jobs in a queue, including new confirmed blocks and older unprocessed blocks.
+func prepareJobs(blockCache *redshift.BlockInterval) ([]redshift.Interval, error) {
+	var result []redshift.Interval
+
+	// schedule new confirmed blocks
+	lastBlock, err := proc.LastConfirmedBlock()
+	if err != nil {
+		glog.Infof("scheduler returns error while getting last confirmed block: %+v", err)
+		return nil, err
+	}
+	hiBlock := lastBlock.Number
+	scheduled := blockCache.GetScheduledBlocks()
+	if scheduled.Low == 0 || scheduled.High == 0 {
+		// no block has been processed, so schedule all new blocks
+		lowBlock := hiBlock - uint64(config.threads*config.batchSize-1)
+		glog.Infof("schedule new blocks of range (%d, %d]", lowBlock, hiBlock)
+		v := redshift.Interval{Low: lowBlock, High: hiBlock}
+		result = addBatchJob(v, result)
+		blockCache.SetScheduledBlocks(v)
+		return result, nil
+	}
+	if hiBlock > scheduled.High {
+		glog.Infof("schedule new blocks of range (%d, %d]", scheduled.High, hiBlock)
+		result = addBatchJob(redshift.Interval{
+			Low:  scheduled.High + 1,
+			High: hiBlock,
+		}, result)
+	}
+	lowBlock := scheduled.Low - uint64(config.threads*config.batchSize)
+	glog.Infof("schedule old blocks of range [%d, %d)", lowBlock, scheduled.Low)
+	result = addBatchJob(redshift.Interval{
+		Low:  lowBlock,
+		High: scheduled.Low - 1,
+	}, result)
+	blockCache.SetScheduledBlocks(redshift.Interval{Low: lowBlock, High: hiBlock})
+
+	return result, nil
+}
+
+// split an interval value into batch jobs of max interval of config.batchSize,
+// append batch jobs to a jobs queue, and return the result
+func addBatchJob(v redshift.Interval, jobs []redshift.Interval) []redshift.Interval {
+	result := jobs
 	low := v.Low
 	hi := low + uint64(config.batchSize)
 	for hi < v.High {
-		job <- redshift.Interval{Low: low, High: hi}
+		result = append(result, redshift.Interval{Low: low, High: hi})
 		low = hi + 1
 		hi = low + uint64(config.batchSize-1)
 	}
 	if low <= v.High {
-		job <- redshift.Interval{Low: low, High: v.High}
+		result = append(result, redshift.Interval{Low: low, High: v.High})
 	}
+	return result
 }
 
 // continuously receive jobs from input channel.
