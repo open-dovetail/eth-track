@@ -55,7 +55,7 @@ func init() {
 }
 
 // return a contract by (1) lookup in-memory cache; (2) quey database; (3) fetch from etherscan
-func GetContract(address string, blockTime int64) (*common.Contract, error) {
+func getContract(address string, blockTime int64) (*common.Contract, error) {
 	contractCache.Lock()
 	defer contractCache.Unlock()
 
@@ -64,22 +64,13 @@ func GetContract(address string, blockTime int64) (*common.Contract, error) {
 		if glog.V(2) {
 			glog.Infof("Found cached contract ABI for address %s Symbol %s methods=%d events=%d", address, contract.Symbol, len(contract.Methods), len(contract.Events))
 		}
-		if len(contract.ABI) == 0 {
-			setContractErrorTime(contract, blockTime)
-			return nil, errors.Errorf("No ABI in cached contract %s", address)
-		}
-		setContractEventTime(contract, blockTime)
 		return contract, nil
 	}
 
 	// fetch contract from db
 	if contract, err := redshift.QueryContract(address); contract != nil && err == nil {
 		contractCache.contracts[address] = contract
-		if err := ParseABI(contract); err != nil {
-			setContractErrorTime(contract, blockTime)
-			return nil, errors.Wrapf(err, "Query returned")
-		}
-		setContractEventTime(contract, blockTime)
+		parseABI(contract)
 		if glog.V(1) {
 			glog.Infof("Query returned contract for address %s Symbol %s methods=%d events=%d", address, contract.Symbol, len(contract.Methods), len(contract.Events))
 		}
@@ -87,7 +78,7 @@ func GetContract(address string, blockTime int64) (*common.Contract, error) {
 	}
 
 	// create new contract
-	return NewContract(address, blockTime)
+	return newContract(address, blockTime)
 }
 
 // query and cache contracts used in recent days -- used when restart the decode engine
@@ -109,7 +100,7 @@ func CacheContracts(days int) error {
 		}
 		contractCache.contracts[contract.Address] = contract
 		if len(contract.ABI) > 0 {
-			ParseABI(contract)
+			parseABI(contract)
 		}
 	}
 	return nil
@@ -146,7 +137,9 @@ func setContractErrorTime(contract *common.Contract, blockTime int64) {
 	}
 }
 
-func NewContract(address string, blockTime int64) (*common.Contract, error) {
+// create new contract by fetching ABI from etherscan
+// return fatal error if failed to connect to etherscan
+func newContract(address string, blockTime int64) (*common.Contract, error) {
 	eventTime := common.RoundToUTCDate(blockTime)
 	contract := &common.Contract{
 		Address:       address,
@@ -165,32 +158,29 @@ func NewContract(address string, blockTime int64) (*common.Contract, error) {
 		}
 	}
 	if len(contract.ABI) == 0 {
-		// panic if etherscan fails
-		glog.Fatalf("Etherscan API failed to return ABI for address %s", address)
+		glog.Errorf("Failed to fetch ABI from etherscan for contract %s", address)
+		return nil, errors.Errorf("Failed to fetch ABI from etherscan for contract %s", address)
 	}
 
 	updateERC20Properties(contract)
 	contractCache.contracts[address] = contract
 
-	err := ParseABI(contract)
-	if err != nil {
+	if err := parseABI(contract); err != nil {
 		if glog.V(2) {
 			glog.Info("Faied to parse ABI", err)
 		}
-
 		// do not store invalid ABI
 		contract.ABI = ""
-		contract.LastErrorDate = common.RoundToUTCDate(blockTime)
+		contract.LastErrorDate = eventTime
 	}
 
 	// insert contract to db
 	if err := redshift.InsertContract(contract); err != nil {
-		glog.Fatalf("Failed to insert contract %s to database: %+v", contract.Address, err)
+		// return fatal database error
+		glog.Errorf("Failed to insert contract %s to database: %+v", contract.Address, err)
+		return contract, err
 	}
 
-	if err != nil {
-		return nil, errors.Wrapf(err, "Invalid ABI for address %s", address)
-	}
 	if glog.V(1) {
 		glog.Infof("Created new contract %s Symbol %s methods=%d events=%d", address, contract.Symbol, len(contract.Methods), len(contract.Events))
 	}
@@ -214,7 +204,7 @@ func NewContract(address string, blockTime int64) (*common.Contract, error) {
 	*/
 }
 
-func ParseABI(c *common.Contract) error {
+func parseABI(c *common.Contract) error {
 	if len(c.ABI) == 0 {
 		return errors.Errorf("No ABI in contract %s", c.Address)
 	}
@@ -278,18 +268,31 @@ type DecodedData struct {
 	Params []*common.NamedValue
 }
 
+// decode transaction input of a specified contract.
+// returns decoded result if decode is successful, or nil otherwise
+// returns fatal error if failed to connect to etherscan or database for the operation
 func DecodeTransactionInput(input []byte, address string, blockTime int64) (*DecodedData, error) {
+	var contract *common.Contract
 	methodID := hex.EncodeToString(input[:4])
 	method, ok := contractCache.stdMethods[methodID]
 	if !ok {
 		// find contract method
-		contract, err := GetContract(address, blockTime)
+		var err error
+		contract, err = getContract(address, blockTime)
 		if err != nil {
 			return nil, err
 		}
-		if method, ok = contract.Methods[methodID]; !ok {
+		if len(contract.Methods) == 0 {
+			if glog.V(1) {
+				glog.Infof("Contract 0x%s contains no method %s", address, methodID)
+			}
 			setContractErrorTime(contract, blockTime)
-			return nil, errors.Errorf("Unknown method %s 0x%s", address, methodID)
+			return nil, nil
+		}
+		if method, ok = contract.Methods[methodID]; !ok {
+			glog.Warningf("Contract 0x%s does not contain method %s", address, methodID)
+			setContractErrorTime(contract, blockTime)
+			return nil, nil
 		}
 	}
 
@@ -297,13 +300,18 @@ func DecodeTransactionInput(input []byte, address string, blockTime int64) (*Dec
 		glog.Infof("decode contract %s method %s tx data %s", address, methodID, hex.EncodeToString(input))
 		glog.Flush()
 	}
-	data, err := SafeAbiDecode(method.Inputs, input[4:])
+	data, err := safeAbiDecode(method.Inputs, input[4:])
 	if err != nil {
-		return nil, err
+		glog.Errorf("Failed to decode transaction for contract %s method %s: %v", address, methodID, err)
+		if contract != nil {
+			setContractErrorTime(contract, blockTime)
+		}
+		return nil, nil
 	}
 	dmap, ok := data.(map[string]interface{})
 	if !ok {
-		return nil, errors.Errorf("Decoded input data %T is not a map", data)
+		glog.Errorf("Decoded transaction data %T is not a map", data)
+		return nil, nil
 	}
 	dec := &DecodedData{
 		Name:   method.Name,
@@ -317,11 +325,14 @@ func DecodeTransactionInput(input []byte, address string, blockTime int64) (*Dec
 			Value: dmap[elem.Name],
 		})
 	}
+	if contract != nil {
+		setContractEventTime(contract, blockTime)
+	}
 	return dec, nil
 }
 
 // catch panic from abi decoder
-func SafeAbiDecode(t *abi.Type, input []byte) (data interface{}, err error) {
+func safeAbiDecode(t *abi.Type, input []byte) (data interface{}, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			data = nil
@@ -348,18 +359,28 @@ func DecodeEventData(wlog *web3.Log, blockTime int64) (*DecodedData, error) {
 	if !ok {
 		// find contract event
 		addr := strings.ToLower(wlog.Address.String())
-		contract, err := GetContract(addr, blockTime)
+		contract, err := getContract(addr, blockTime)
 		if err != nil {
 			return nil, err
 		}
+		if len(contract.Events) == 0 {
+			setContractErrorTime(contract, blockTime)
+			if glog.V(1) {
+				glog.Infof("Contract 0x%s contains no event %s", addr, eventID)
+			}
+			return nil, nil
+		}
 		if event, ok = contract.Events[eventID]; !ok {
 			setContractErrorTime(contract, blockTime)
-			return nil, errors.Errorf("Unknown event %s %s", addr, eventID)
+			glog.Warningf("Contract 0x%s does not contain event %s", addr, eventID)
+			return nil, nil
 		}
 		if data, err = event.ParseLog(wlog); err != nil {
 			setContractErrorTime(contract, blockTime)
-			return nil, errors.Wrapf(err, "Error parsing log %s", addr)
+			glog.Errorf("Failed to decode event for contract %s event %s: %v", addr, eventID, err)
+			return nil, nil
 		}
+		setContractEventTime(contract, blockTime)
 	}
 
 	dec := &DecodedData{

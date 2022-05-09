@@ -10,7 +10,10 @@ import (
 	web3 "github.com/umbracle/ethgo"
 )
 
-func DecodeTransaction(tx *web3.Transaction, blockTime int64) *common.Transaction {
+// decode transaction input data
+// returns decoded transaction if decode is successful, or raw input data otherwise
+// returns fatal error if failed to connect to etherscan or database
+func DecodeTransaction(tx *web3.Transaction, blockTime int64) (*common.Transaction, error) {
 	if glog.V(2) {
 		glog.Infoln("Decode transaction:", tx.BlockNumber, tx.TxnIndex, tx.From.String(), tx.Value, tx.Hash.String())
 	}
@@ -34,31 +37,33 @@ func DecodeTransaction(tx *web3.Transaction, blockTime int64) *common.Transactio
 	// decode only if method is specified in the input data
 	if len(tx.Input) < 4 {
 		if glog.V(1) {
-			glog.Infof("Transaction %d: %s No decode", tx.TxnIndex, tx.Hash.String())
+			glog.Infof("Transaction %d: %s No data to decode", tx.TxnIndex, tx.Hash.String())
 		}
-		return result
+		return result, nil
 	}
 
 	if tx.To == nil {
 		glog.Warningf("Transaction %d: %s No contract address", tx.TxnIndex, tx.Hash.String())
-		return result
+		return result, nil
 	}
 
-	if data, err := DecodeTransactionInput(tx.Input, result.To, blockTime); err == nil {
+	data, err := DecodeTransactionInput(tx.Input, result.To, blockTime)
+	if err != nil {
+		// fatal error
+		return result, err
+	}
+	if data != nil {
+		// data decoded successfully
 		result.Method = data.Name
 		result.Params = data.Params
 	} else {
-		if glog.V(1) {
-			glog.Warningf("Transaction %d: %s Failed decode - %s", tx.TxnIndex, tx.Hash.String(), err.Error())
-		}
+		// failed to decode data
 		result.Method = "UNKNOWN"
 	}
 	if glog.V(1) {
 		glog.Infof("Transaction %d: %s Method %s", tx.TxnIndex, tx.Hash.String(), result.Method)
 	}
-	//fmt.Printf("Transaction %d: %s Method %s\n", tx.TxnIndex, tx.Hash.String(), result.Method)
-
-	return result
+	return result, nil
 }
 
 // Return false if transaction failed, true if succeeded

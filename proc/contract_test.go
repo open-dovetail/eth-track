@@ -21,7 +21,7 @@ func TestContract(t *testing.T) {
 	expected := [][]int{{22, 3}, {32, 11}, {5, 2}}
 
 	for i, addr := range addrs {
-		c, err := NewContract(addr, -1)
+		c, err := newContract(addr, -1)
 		assert.NoError(t, err, "Error retrieving contract: %s", addr)
 		assert.Equal(t, expected[i][0], len(c.Methods), "contract %s should contain %d methods", addr, expected[i][0])
 		assert.Equal(t, expected[i][1], len(c.Events), "contract %s should contain %d events", addr, expected[i][1])
@@ -51,14 +51,14 @@ func TestDecodeTransaction(t *testing.T) {
 		Address: address,
 		ABI:     data,
 	}
-	err = ParseABI(contract)
+	err = parseABI(contract)
 	require.NoError(t, err, "Parse ABI should not throw exception")
 
 	input := tx.Input
 	methodID := hex.EncodeToString(input[:4])
 	method, ok := contract.Methods[methodID]
 	assert.True(t, ok, "contract should contain the method %s", methodID)
-	decoded, err := SafeAbiDecode(method.Inputs, input[4:])
+	decoded, err := safeAbiDecode(method.Inputs, input[4:])
 	assert.Error(t, err, "transaction decode should catch panic error")
 	assert.Nil(t, decoded, "tranction decode should return no data")
 }

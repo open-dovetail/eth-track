@@ -134,7 +134,11 @@ func DecodeBlock(block *web3.Block) (*common.Block, error) {
 	}
 
 	for _, tx := range block.Transactions {
-		txn := DecodeTransaction(tx, result.BlockTime)
+		txn, err := DecodeTransaction(tx, result.BlockTime)
+		if err != nil {
+			glog.Errorf("Failed to decode transaction: %s", err.Error())
+			return nil, err
+		}
 		// check receipt status
 		status, err := GetTransactionStatus(txn.Hash)
 		if err != nil {
@@ -179,7 +183,12 @@ func DecodeEvents(b *common.Block) error {
 	// wlogs, err := GetEthereumClient().Eth().GetLogs(filter)
 
 	for _, w := range wlogs {
-		evt := DecodeEventLog(w, b.BlockTime)
+		evt, err := DecodeEventLog(w, b.BlockTime)
+		if err != nil {
+			// fatal system error
+			glog.Errorf("Failed to decode event log: %s", err.Error())
+			return err
+		}
 		if evt.Removed {
 			if glog.V(1) {
 				glog.Infof("removed event %d-%d", evt.BlockNumber, evt.LogIndex)
