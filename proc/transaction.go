@@ -43,7 +43,9 @@ func DecodeTransaction(tx *web3.Transaction, blockTime int64) (*common.Transacti
 	}
 
 	if tx.To == nil {
-		glog.Warningf("Transaction %d: %s No contract address", tx.TxnIndex, tx.Hash.String())
+		if glog.V(1) {
+			glog.Warningf("Transaction %d: %s No contract address", tx.TxnIndex, tx.Hash.String())
+		}
 		return result, nil
 	}
 

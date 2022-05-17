@@ -108,7 +108,7 @@ func StoreContracts(contracts map[string]*common.Contract) error {
 	ctx := context.Background()
 	sql := fmt.Sprintf(`COPY eth.contracts (%s) FROM 's3://%s/%s' IAM_ROLE '%s' REGION '%s' TIMEFORMAT 'auto' STATUPDATE ON CSV`,
 		strings.Join(contractColumns(), ","), bucket.name, csvFile, bucket.copyRole, bucket.region)
-	glog.Info("Execute sql:", sql)
+	glog.Info("Execute sql: ", sql)
 	if _, err := tx.Exec(ctx, sql); err != nil {
 		tx.Rollback(ctx)
 		deleteS3File(csvFile)

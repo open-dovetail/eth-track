@@ -154,7 +154,7 @@ func StoreBlocks(blocks map[string]*common.Block, s3Folder string) error {
 	// copy transactions
 	sql := fmt.Sprintf(`COPY eth.transactions (%s) FROM 's3://%s/%s/transactions.csv' IAM_ROLE '%s' REGION '%s' TIMEFORMAT 'auto' STATUPDATE ON CSV`,
 		strings.Join(transactionColumns(), ","), bucket.name, s3Folder, bucket.copyRole, bucket.region)
-	glog.Info("Execute sql:", sql)
+	glog.Info("Execute sql: ", sql)
 	if _, err := tx.Exec(ctx, sql); err != nil {
 		tx.Rollback(ctx)
 		//deleteS3Folder(s3Folder)
@@ -164,7 +164,7 @@ func StoreBlocks(blocks map[string]*common.Block, s3Folder string) error {
 	// copy event logs
 	sql = fmt.Sprintf(`COPY eth.logs (%s) FROM 's3://%s/%s/logs.csv' IAM_ROLE '%s' REGION '%s' TIMEFORMAT 'auto' STATUPDATE ON CSV`,
 		strings.Join(eventLogColumns(), ","), bucket.name, s3Folder, bucket.copyRole, bucket.region)
-	glog.Info("Execute sql:", sql)
+	glog.Info("Execute sql: ", sql)
 	if _, err := tx.Exec(ctx, sql); err != nil {
 		tx.Rollback(ctx)
 		//deleteS3Folder(s3Folder)
@@ -174,7 +174,7 @@ func StoreBlocks(blocks map[string]*common.Block, s3Folder string) error {
 	// copy blocks
 	sql = fmt.Sprintf(`COPY eth.blocks (%s) FROM 's3://%s/%s/blocks.csv' IAM_ROLE '%s' REGION '%s' TIMEFORMAT 'auto' STATUPDATE ON CSV`,
 		strings.Join(blockColumns(), ","), bucket.name, s3Folder, bucket.copyRole, bucket.region)
-	glog.Info("Execute sql:", sql)
+	glog.Info("Execute sql: ", sql)
 	if _, err := tx.Exec(ctx, sql); err != nil {
 		tx.Rollback(ctx)
 		//deleteS3Folder(s3Folder)

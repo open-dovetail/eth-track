@@ -386,8 +386,14 @@ func DecodeEventData(wlog *web3.Log, blockTime int64) (*DecodedData, error) {
 		}
 		if data, err = event.ParseLog(wlog); err != nil {
 			setContractErrorTime(contract, blockTime)
-			glog.Errorf("Failed to decode event for contract %s event %s: %v", addr, eventID, err)
-			return nil, nil
+			if glog.V(1) {
+				glog.Warningf("Failed to decode event for contract %s event %s: %v", addr, eventID, err)
+			}
+			return &DecodedData{
+				Name:   event.Name,
+				ID:     eventID,
+				Params: []*common.NamedValue{},
+			}, nil
 		}
 		setContractEventTime(contract, blockTime)
 	}
