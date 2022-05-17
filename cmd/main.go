@@ -123,7 +123,7 @@ func main() {
 	}
 
 	// register os interrupt signal
-	sig := make(chan os.Signal, 1)
+	sig := make(chan os.Signal, config.threads)
 	signal.Notify(sig, os.Interrupt, os.Kill)
 
 	// start workers
