@@ -28,6 +28,8 @@ type Config struct {
 	awsRegion      string // AWS region for redshift server
 	awsSecret      string // AWS secret alias for redshift connection
 	awsRedshift    string // redshift DB name
+	awsS3Bucket    string // name of AWS s3 bucket
+	awsCopyRole    string // aws role for copying csv from s3 to redshift
 }
 
 var config = &Config{}
@@ -44,6 +46,8 @@ func init() {
 	flag.StringVar(&config.awsRegion, "region", "us-west-2", "AWS region for redshift server")
 	flag.StringVar(&config.awsSecret, "secret", "dev/ethdb/Redshift", "AWS secret alias for redshift connection")
 	flag.StringVar(&config.awsRedshift, "redshift", "ethdb", "Redshift database name")
+	flag.StringVar(&config.awsS3Bucket, "s3Bucket", "dev-eth-track", "AWS s3 bucket name")
+	flag.StringVar(&config.awsCopyRole, "copyRole", "", "AWS role to copy csv from s3 to redshift")
 }
 
 // check env variables, which overrides the commandline input
@@ -65,6 +69,12 @@ func envOverride() {
 	}
 	if v, ok := os.LookupEnv("AWS_REDSHIFT"); ok && v != "" {
 		config.awsRedshift = v
+	}
+	if v, ok := os.LookupEnv("AWS_S3BUCKET"); ok && v != "" {
+		config.awsS3Bucket = v
+	}
+	if v, ok := os.LookupEnv("AWS_COPY_ROLE"); ok && v != "" {
+		config.awsCopyRole = v
 	}
 
 	// Google log setting
@@ -153,6 +163,11 @@ func connect() error {
 		return errors.Wrapf(err, "Failed to invoke etherscan API with key %s", config.apiKey)
 	}
 
+	// config AWS s3 bucket
+	if _, err := redshift.GetS3Bucket(config.awsS3Bucket, config.awsProfile, config.awsRegion, config.awsCopyRole); err != nil {
+		return errors.Wrapf(err, "Failed to config AWS s3 bucket %s", config.awsS3Bucket)
+	}
+
 	// initialize redshift db connection
 	secret, err := redshift.GetAWSSecret(config.awsSecret, config.awsProfile, config.awsRegion)
 	if err != nil {
@@ -225,7 +240,7 @@ func prepareJobs(blockCache *redshift.BlockInterval) ([]redshift.Interval, error
 	if scheduled.Low == 0 || scheduled.High == 0 {
 		// no block has been processed, so schedule all new blocks
 		lowBlock := hiBlock - uint64(config.threads*config.batchSize-1)
-		glog.Infof("schedule new blocks of range (%d, %d]", lowBlock, hiBlock)
+		glog.Infof("schedule new blocks of range [%d, %d]", lowBlock, hiBlock)
 		v := redshift.Interval{Low: lowBlock, High: hiBlock}
 		result = addBatchJob(v, result)
 		blockCache.SetScheduledBlocks(v)

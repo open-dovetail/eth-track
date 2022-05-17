@@ -42,7 +42,7 @@ func setup() error {
 	}
 	secretName, ok := os.LookupEnv("AWS_SECRET")
 	if !ok {
-		secretName = "dev/ethdb/Redshift"
+		secretName = "dev/Redshift"
 	}
 	secret, err := redshift.GetAWSSecret(secretName, profile, region)
 	if err != nil {
@@ -50,10 +50,22 @@ func setup() error {
 	}
 	dbName, ok := os.LookupEnv("AWS_REDSHIFT")
 	if !ok {
-		dbName = "ethdb"
+		dbName = "dev"
 	}
 	if _, err := redshift.Connect(secret, dbName, 10); err != nil {
 		return errors.Wrapf(err, "Failed to connect to redshift db %s", dbName)
+	}
+	s3Bucket, ok := os.LookupEnv("AWS_S3BUCKET")
+	if !ok {
+		s3Bucket = "dev-eth-track"
+	}
+	copyRole, ok := os.LookupEnv("AWS_COPY_ROLE")
+	if !ok {
+		copyRole = "arn:aws:iam::436486865631:role/redshift-eth-track-copy"
+	}
+
+	if _, err := redshift.GetS3Bucket(s3Bucket, profile, region, copyRole); err != nil {
+		return errors.Wrapf(err, "Failed to config AWS s3 bucket %s", s3Bucket)
 	}
 	return nil
 }

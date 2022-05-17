@@ -26,5 +26,5 @@ func TestAWSSecret(t *testing.T) {
 	assert.NoError(t, err, "get AWS secret should not throw error")
 	assert.NotNil(t, secret, "AWS secret should not be nil")
 	assert.Equal(t, "redshift", secret.Engine, "returned secret should be for engine 'redshift'")
-	//fmt.Println(secret)
+	// fmt.Println(secret)
 }

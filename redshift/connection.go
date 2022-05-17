@@ -91,6 +91,7 @@ func (c *RedshiftConn) Exec(sql string, args ...interface{}) error {
 // tx.CopyFrom(ctx, ...)
 // tx.Commit(ctx)
 func (c *RedshiftConn) Begin() (pgx.Tx, error) {
+	c.ctx = context.Background()
 	return c.pool.Begin(c.ctx)
 }
 

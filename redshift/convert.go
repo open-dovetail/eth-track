@@ -19,28 +19,61 @@ import (
 	web3 "github.com/umbracle/ethgo"
 )
 
-func quotedBytes(buf []byte) string {
-	if len(buf) > 10240 {
-		glog.Warning("Database ignore large byte array of length ", len(buf))
-		return `'\x'`
+// truncate a string to a max length
+func truncateString(s string, size int) string {
+	if len(s) > size {
+		if glog.V(1) {
+			glog.Warningf("Truncated string length %d to %d", len(s), size)
+		}
+		return s[:size]
 	}
-	return `'\x` + hex.EncodeToString(buf) + "'"
+	return s
 }
 
-func quotedString(str string) string {
-	if len(str) > 32768 {
-		glog.Warning("Database ignore large string of length ", len(str))
+// return empty string if the original string is over max length
+func filterStringByLength(s string, size int) string {
+	if len(s) > size {
+		if glog.V(1) {
+			glog.Warningf("Ignored string value of size > %d", size)
+		}
 		return ""
 	}
+	return s
+}
+
+// return nil if the original byte array is over max length
+func filterBytesByLength(b []byte, size int) []byte {
+	if len(b) > size {
+		if glog.V(1) {
+			glog.Warningf("Ignored byte array of size > %d", size)
+		}
+		return []byte{}
+	}
+	return b
+}
+
+// convert byte array into a quoted hex decimal presentation, using specified single or double quote
+func quotedBytes(buf []byte, quote string) string {
+	if quote == `"` {
+		// do not add prefix \x for csv file (which uses double-quote)
+		return quote + hex.EncodeToString(buf) + quote
+	}
+	// add prefix \x for insert statement
+	return quote + `\x` + hex.EncodeToString(buf) + quote
+}
+
+// convert string to be enclosed by specified single or double quote
+func quotedString(str string, quote string) string {
 	// remove trailing backslash, which will escape quote and result in SQL syntax error
-	for len(str) > 0 && str[len(str)-1:] == "\\" {
+	for len(str) > 0 && str[len(str)-1:] == `\` {
 		str = str[:len(str)-1]
 	}
 
-	return "'" + strings.ReplaceAll(str, "'", "''") + "'"
+	return quote + strings.ReplaceAll(str, quote, quote+quote) + quote
 }
 
-func convertSQLArg(arg interface{}) (string, error) {
+// convert a value into a SQL argument for a number or a quoted string by specified single or double quote
+func convertSQLArg(arg interface{}, quote string) (string, error) {
 	switch arg := arg.(type) {
 	case nil:
 		return "null", nil
@@ -51,13 +84,13 @@ func convertSQLArg(arg interface{}) (string, error) {
 	case bool:
 		return strconv.FormatBool(arg), nil
 	case time.Duration:
-		return quotedString(fmt.Sprintf("%d microsecond", int64(arg)/1000)), nil
+		return quotedString(fmt.Sprintf("%d microsecond", int64(arg)/1000), quote), nil
 	case time.Time:
-		return arg.Truncate(time.Microsecond).Format("'2006-01-02 15:04:05.999999999'"), nil
+		return quotedString(arg.Truncate(time.Microsecond).Format("2006-01-02 15:04:05.999999999"), quote), nil
 	case string:
-		return quotedString(arg), nil
+		return quotedString(arg, quote), nil
 	case []byte:
-		return quotedBytes(arg), nil
+		return quotedBytes(arg, quote), nil
 	case int8:
 		return strconv.FormatInt(int64(arg), 10), nil
 	case int16:
@@ -88,10 +121,11 @@ func convertSQLArg(arg interface{}) (string, error) {
 	return "", fmt.Errorf("unsupported simple type for %v", arg)
 }
 
+// converts tuple of values into a row of values for SQL insert statement
 func sqlValues(args []interface{}) (string, error) {
 	buf := bytes.Buffer{}
 	for i, v := range args {
-		str, err := convertSQLArg(v)
+		str, err := convertSQLArg(v, `'`)
 		if err != nil {
 			return "", err
 		}
@@ -103,6 +137,23 @@ func sqlValues(args []interface{}) (string, error) {
 		buf.WriteString(str)
 	}
 	buf.WriteString(")")
+	return buf.String(), nil
+}
+
+// converts tuple of values into a row of CSV format
+func csvValues(args []interface{}) (string, error) {
+	buf := bytes.Buffer{}
+	for i, v := range args {
+		str, err := convertSQLArg(v, `"`)
+		if err != nil {
+			return "", err
+		}
+		if i > 0 {
+			buf.WriteString(",")
+		}
+		buf.WriteString(str)
+	}
+	buf.WriteString("\n")
 	return buf.String(), nil
 }
 
@@ -132,6 +183,25 @@ func composeBatchInsert(tableName string, columns []string, srcRows pgx.CopyFrom
 		}
 	}
 	return buf.String(), nil
+}
+
+// compose CSV file content for copy multiple records
+// the CSV file can be written to s3 and then copy to redshift, which may be more stable than direct insert statement.
+func composeCSVData(srcRows pgx.CopyFromSource) ([]byte, error) {
+	if srcRows == nil || !srcRows.Next() {
+		return nil, nil
+	}
+	buf := bytes.Buffer{}
+	for srcRows.Next() {
+		if v, err := srcRows.Values(); err == nil {
+			values, err := csvValues(v)
+			if err != nil {
+				return nil, err
+			}
+			buf.WriteString(values)
+		}
+	}
+	return buf.Bytes(), nil
 }
 
 // convert named param value to string or float64 for database

@@ -1,13 +1,13 @@
 package redshift
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/awserr"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/secretsmanager"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/golang/glog"
 )
 
@@ -23,57 +23,24 @@ type PasswordSecret struct {
 
 func GetAWSSecret(secretName, profile, region string) (*PasswordSecret, error) {
 	// Create a Secrets Manager client with AWS profile, region, and default config/credential specified in ~/.aws
-	// ref: https://docs.aws.amazon.com/sdk-for-go/api/aws/session/
-	sess, err := session.NewSessionWithOptions(session.Options{
-		Profile: profile,
-		Config: aws.Config{
-			Region: aws.String(region),
-		},
-		SharedConfigState: session.SharedConfigEnable,
-	})
+	cfg, err := config.LoadDefaultConfig(context.TODO(),
+		config.WithRegion(region),
+		config.WithSharedConfigProfile(profile))
 	if err != nil {
 		// Handle session creation error
-		glog.Error("Failed new AWS session:", err.Error())
+		glog.Errorf("Failed to get config for AWS region %s and profile %s: %s", region, profile, err.Error())
 		return nil, err
 	}
-	svc := secretsmanager.New(sess)
-	input := &secretsmanager.GetSecretValueInput{
-		SecretId:     aws.String(secretName),
-		VersionStage: aws.String("AWSCURRENT"), // VersionStage defaults to AWSCURRENT if unspecified
-	}
+	svc := secretsmanager.NewFromConfig(cfg)
 
 	// In this sample we only handle the specific exceptions for the 'GetSecretValue' API.
 	// See https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetSecretValue.html
-
-	result, err := svc.GetSecretValue(input)
+	result, err := svc.GetSecretValue(context.TODO(),
+		&secretsmanager.GetSecretValueInput{
+			SecretId: aws.String(secretName),
+		})
 	if err != nil {
-		if aerr, ok := err.(awserr.Error); ok {
-			switch aerr.Code() {
-			case secretsmanager.ErrCodeDecryptionFailure:
-				// Secrets Manager can't decrypt the protected secret text using the provided KMS key.
-				glog.Error(secretsmanager.ErrCodeDecryptionFailure, aerr.Error())
-
-			case secretsmanager.ErrCodeInternalServiceError:
-				// An error occurred on the server side.
-				glog.Error(secretsmanager.ErrCodeInternalServiceError, aerr.Error())
-
-			case secretsmanager.ErrCodeInvalidParameterException:
-				// You provided an invalid value for a parameter.
-				glog.Error(secretsmanager.ErrCodeInvalidParameterException, aerr.Error())
-
-			case secretsmanager.ErrCodeInvalidRequestException:
-				// You provided a parameter value that is not valid for the current state of the resource.
-				glog.Error(secretsmanager.ErrCodeInvalidRequestException, aerr.Error())
-
-			case secretsmanager.ErrCodeResourceNotFoundException:
-				// We can't find the resource that you asked for.
-				glog.Error(secretsmanager.ErrCodeResourceNotFoundException, aerr.Error())
-			}
-		} else {
-			// Print the error, cast err to awserr.Error to get the Code and
-			// Message from an error.
-			glog.Error("Failed GetSecretValue:", err.Error())
-		}
+		glog.Error("Failed GetSecretValue:", err.Error())
 		return nil, err
 	}
 

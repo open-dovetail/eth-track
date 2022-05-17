@@ -1,6 +1,9 @@
 package redshift
 
 import (
+	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/golang/glog"
@@ -13,33 +16,26 @@ type copyFromContracts struct {
 	idx  int
 }
 
-// implement pgx.CopyFromSource interface
+// column names for batch insert or copy
+func contractColumns() []string {
+	return []string{"Address", "Name", "Symbol", "Decimals", "TotalSupply", "LastEventDate", "LastErrorDate", "ABI"}
+}
+
+// implement pgx.CopyFromSource interface,  return tuple of values in order of contractColumns()
 func (c *copyFromContracts) Values() ([]interface{}, error) {
 	contract := c.rows[c.idx]
 	var v []interface{}
 	v = append(v, common.HexToFixedString(contract.Address, 40))
-	v = append(v, trunkString(contract.Name, 40))
-	v = append(v, trunkString(contract.Symbol, 40))
+	v = append(v, truncateString(contract.Name, 256))
+	v = append(v, truncateString(contract.Symbol, 256))
 	v = append(v, contract.Decimals)
 	v = append(v, contract.TotalSupply)
-	v = append(v, common.SecondsToDateTime(contract.LastEventDate))
-	v = append(v, common.SecondsToDateTime(contract.LastErrorDate))
-	if len(contract.ABI) > 1024*31 {
-		glog.Warningf("Database ignored large ABI of size %d", len(contract.ABI))
-		v = append(v, "")
-	} else {
-		v = append(v, contract.ABI)
-	}
+	// format date type to include only date part for cvs load file
+	v = append(v, common.SecondsToDateTime(contract.LastEventDate).Format("2006-01-02"))
+	v = append(v, common.SecondsToDateTime(contract.LastErrorDate).Format("2006-01-02"))
+	v = append(v, filterStringByLength(contract.ABI, 1024*31))
 	//fmt.Println("Copy contract", v[0])
 	return v, nil
-}
-
-func trunkString(s string, size int) string {
-	if len(s) > size {
-		glog.Warningf("Database truncated string value of size > %d", size)
-		return s[:size]
-	}
-	return s
 }
 
 func (c *copyFromContracts) Next() bool {
@@ -61,10 +57,9 @@ func InsertContracts(contracts map[string]*common.Contract) error {
 	for _, v := range contracts {
 		source.rows = append(source.rows, v)
 	}
-	columns := []string{"Address", "Name", "Symbol", "Decimals", "TotalSupply", "LastEventDate", "LastErrorDate", "ABI"}
 	// CopyFrom does not work for redshift probably because the postgres copy protocol is not supported by redshift
 	//rows, err := db.CopyFrom(pgx.Identifier{"eth", "contracts"}, columns, source)
-	sql, err := composeBatchInsert("eth.contracts", columns, source)
+	sql, err := composeBatchInsert("eth.contracts", contractColumns(), source)
 	//fmt.Println("Insert contracts:", sql)
 	if err != nil {
 		return err
@@ -74,6 +69,55 @@ func InsertContracts(contracts map[string]*common.Contract) error {
 		return err
 	}
 	return nil
+}
+
+// write specified contracts to s3 as a csv file.
+func writeContractsToS3(contracts map[string]*common.Contract, csvFile string) error {
+	if len(contracts) == 0 {
+		return nil
+	}
+
+	source := &copyFromContracts{idx: -1}
+	for _, c := range contracts {
+		source.rows = append(source.rows, c)
+	}
+	data, err := composeCSVData(source)
+	if err != nil {
+		return err
+	}
+
+	//fmt.Println("Write contracts to s3:", string(data))
+	_, err = writeS3File(csvFile, data)
+	return err
+}
+
+// write data of contracts to s3 as csv, then copy the result to redshift in a transaction
+func StoreContracts(contracts map[string]*common.Contract) error {
+	csvFile := "contracts.csv"
+	if err := writeContractsToS3(contracts, csvFile); err != nil {
+		return err
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		glog.Errorf("Failed to start db tx: %+v", err)
+		return err
+	}
+
+	// copy contracts
+	ctx := context.Background()
+	sql := fmt.Sprintf(`COPY eth.contracts (%s) FROM 's3://%s/%s' IAM_ROLE '%s' REGION '%s' TIMEFORMAT 'auto' STATUPDATE ON CSV`,
+		strings.Join(contractColumns(), ","), bucket.name, csvFile, bucket.copyRole, bucket.region)
+	glog.Info("Execute sql:", sql)
+	if _, err := tx.Exec(ctx, sql); err != nil {
+		tx.Rollback(ctx)
+		deleteS3File(csvFile)
+		return err
+	}
+
+	err = tx.Commit(ctx)
+	deleteS3File(csvFile)
+	return err
 }
 
 // acquires a connection, updates contract EventDate and ErrorDate, then release the connection
@@ -90,17 +134,13 @@ func InsertContract(contract *common.Contract) error {
 	if contract == nil {
 		return nil
 	}
-	abi := contract.ABI
-	if len(abi) > 1024*31 {
-		glog.Warningf("Database ignored large ABI of size %d", len(abi))
-		abi = ""
-	}
+	abi := filterStringByLength(contract.ABI, 1024*31)
 
 	sql := "INSERT INTO eth.contracts (Address, Name, Symbol, Decimals, TotalSupply, LastEventDate, LastErrorDate, ABI) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
 	return db.Exec(sql,
 		common.HexToFixedString(contract.Address, 40),
-		trunkString(contract.Name, 40),
-		trunkString(contract.Symbol, 40),
+		truncateString(contract.Name, 256),
+		truncateString(contract.Symbol, 256),
 		contract.Decimals,
 		contract.TotalSupply,
 		common.SecondsToDateTime(contract.LastEventDate),

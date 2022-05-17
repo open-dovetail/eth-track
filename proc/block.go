@@ -1,6 +1,7 @@
 package proc
 
 import (
+	"strconv"
 	"time"
 
 	"github.com/golang/glog"
@@ -51,7 +52,9 @@ func DecodeBlockRange(hiBlock, lowBlock uint64) (lastBlock *common.Block, firstB
 		// ignore wrong block range
 		return nil, nil, nil
 	}
+
 	startTime := time.Now().Unix() // to print out elapsed time of the decode process
+	blocks := make(map[string]*common.Block)
 	nextBlock := hiBlock
 	if hiBlock == 0 {
 		// decode last confirmed block if hiBlock is not specified
@@ -63,6 +66,7 @@ func DecodeBlockRange(hiBlock, lowBlock uint64) (lastBlock *common.Block, firstB
 		if lastBlock, err = DecodeBlock(block); err != nil {
 			return nil, nil, err
 		}
+		blocks[lastBlock.Hash] = lastBlock
 		firstBlock = lastBlock
 		nextBlock = lastBlock.Number - 1
 	}
@@ -78,15 +82,23 @@ func DecodeBlockRange(hiBlock, lowBlock uint64) (lastBlock *common.Block, firstB
 	for nextBlock >= lowBlock {
 		var block *common.Block
 		if block, err = DecodeBlockByNumber(nextBlock); err != nil {
+			if err := redshift.StoreBlocks(blocks, strconv.FormatUint(lastBlock.Number, 10)); err != nil {
+				return nil, nil, err
+			}
 			return lastBlock, firstBlock, err
 		}
 		firstBlock = block
+		blocks[block.Hash] = block
 		if nextBlock == hiBlock {
 			lastBlock = block
 		}
 		nextBlock--
 	}
 
+	glog.Infof("Store blocks of range [%d, %d]", firstBlock.Number, lastBlock.Number)
+	if err := redshift.StoreBlocks(blocks, strconv.FormatUint(lastBlock.Number, 10)); err != nil {
+		return nil, nil, err
+	}
 	glog.Infof("Decoded block range [%d, %d] - elapsed: %ds", firstBlock.Number, lastBlock.Number, (time.Now().Unix() - startTime))
 	return lastBlock, firstBlock, nil
 }
@@ -117,6 +129,7 @@ func DecodeBlockByHash(blockHash web3.Hash) (*common.Block, error) {
 	return nil, errors.Errorf("Failed to get block by hash %s", blockHash.String())
 }
 
+// decode transactions/eventlogs and insert data to database
 func DecodeBlock(block *web3.Block) (*common.Block, error) {
 	glog.Infof("Block %d: %s @ %d transactions=%d", block.Number, block.Hash.String(), block.Timestamp, len(block.Transactions))
 	result := &common.Block{
@@ -153,12 +166,7 @@ func DecodeBlock(block *web3.Block) (*common.Block, error) {
 			}
 		}
 	}
-	if err := DecodeEvents(result); err != nil {
-		return result, err
-	}
-
-	// save block and associated transactions and logs in database
-	err := redshift.InsertBlock(result)
+	err := DecodeEvents(result)
 	return result, err
 }
 
