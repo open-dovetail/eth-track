@@ -269,8 +269,8 @@ func prepareJobs(blockCache *redshift.BlockInterval) ([]redshift.Interval, error
 func addBatchJob(v redshift.Interval, jobs []redshift.Interval) []redshift.Interval {
 	result := jobs
 	low := v.Low
-	hi := low + uint64(config.batchSize)
-	for hi < v.High {
+	hi := low + uint64(config.batchSize-1)
+	for hi <= v.High {
 		result = append(result, redshift.Interval{Low: low, High: hi})
 		low = hi + 1
 		hi = low + uint64(config.batchSize-1)
@@ -298,16 +298,12 @@ func work(gid int, job <-chan redshift.Interval, sig <-chan os.Signal, ctx conte
 			return errors.New("interrupted")
 		case v := <-job:
 			glog.Infof("worker %d processing block interval [%d, %d]", gid, v.Low, v.High)
-			lastBlock, firstBlock, err := proc.DecodeBlockRange(v.High, v.Low)
-			//lastBlock, firstBlock, err := simulator(v.High, v.Low)
-			if err != nil {
+			if err := proc.DecodeBlockRange(v.High, v.Low); err != nil {
 				glog.Infof("worker %d returns error %v", gid, err)
 				return err
 			}
-			block := lastBlock.Number
-			for firstBlock != nil && block >= firstBlock.Number {
-				blockCache.AddBlock(block)
-				block--
+			for i := v.Low; i <= v.High; i++ {
+				blockCache.AddBlock(i)
 			}
 			if err := blockCache.SaveNextInterval(); err != nil {
 				glog.Infof("worker %d returns save block cache error %v", gid, err)

@@ -29,8 +29,6 @@ func TestDecodeBlockRange(t *testing.T) {
 	block, err := LastConfirmedBlock()
 	require.NoError(t, err, "Failed retrieve last block number with 12 block delay")
 	lowBlock := block.Number - 3
-	lastBlock, firstBlock, err := DecodeBlockRange(block.Number, lowBlock)
+	err = DecodeBlockRange(block.Number, lowBlock)
 	require.NoError(t, err, "Failed to decode block range [%d, %d]", block.Number, lowBlock)
-	assert.Equal(t, block.Number, lastBlock.Number, "last block number should match last confirmed block")
-	assert.Equal(t, lowBlock, firstBlock.Number, "first block number should match low bound of block range")
 }

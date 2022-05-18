@@ -44,63 +44,29 @@ func LastConfirmedBlock() (*web3.Block, error) {
 	return nil, errors.Errorf("Failed to get last confirmed block")
 }
 
-// decode range of blocks and return the first and last blocks.
-// if hiBlock is 0, decode from the last confirmed block;
-// if lowBlock is 0, decode only a single block specified by the hiBlock.
-func DecodeBlockRange(hiBlock, lowBlock uint64) (lastBlock *common.Block, firstBlock *common.Block, err error) {
-	if hiBlock < lowBlock {
+// decode range of blocks, and save result to database
+func DecodeBlockRange(hiBlock, lowBlock uint64) error {
+	if hiBlock == 0 || lowBlock == 0 || hiBlock < lowBlock {
 		// ignore wrong block range
-		return nil, nil, nil
+		return nil
 	}
 
 	startTime := time.Now().Unix() // to print out elapsed time of the decode process
 	blocks := make(map[string]*common.Block)
-	nextBlock := hiBlock
-	if hiBlock == 0 {
-		// decode last confirmed block if hiBlock is not specified
-		var block *web3.Block
-		block, err = LastConfirmedBlock()
+	for i := lowBlock; i <= hiBlock; i++ {
+		block, err := DecodeBlockByNumber(i)
 		if err != nil {
-			return nil, nil, err
+			return err
 		}
-		if lastBlock, err = DecodeBlock(block); err != nil {
-			return nil, nil, err
-		}
-		blocks[lastBlock.Hash] = lastBlock
-		firstBlock = lastBlock
-		nextBlock = lastBlock.Number - 1
-	}
-
-	if lowBlock == 0 {
-		// return single block if lowBlock is not specified
-		if lastBlock != nil {
-			return lastBlock, lastBlock, nil
-		}
-		lowBlock = nextBlock
-	}
-
-	for nextBlock >= lowBlock {
-		var block *common.Block
-		if block, err = DecodeBlockByNumber(nextBlock); err != nil {
-			if err := redshift.StoreBlocks(blocks, strconv.FormatUint(lastBlock.Number, 10)); err != nil {
-				return nil, nil, err
-			}
-			return lastBlock, firstBlock, err
-		}
-		firstBlock = block
 		blocks[block.Hash] = block
-		if nextBlock == hiBlock {
-			lastBlock = block
-		}
-		nextBlock--
 	}
 
-	glog.Infof("Store blocks of range [%d, %d]", firstBlock.Number, lastBlock.Number)
-	if err := redshift.StoreBlocks(blocks, strconv.FormatUint(lastBlock.Number, 10)); err != nil {
-		return nil, nil, err
+	glog.Infof("Store blocks of range [%d, %d]", lowBlock, hiBlock)
+	if err := redshift.StoreBlocks(blocks, strconv.FormatUint(hiBlock, 10)); err != nil {
+		return err
 	}
-	glog.Infof("Decoded block range [%d, %d] - elapsed: %ds", firstBlock.Number, lastBlock.Number, (time.Now().Unix() - startTime))
-	return lastBlock, firstBlock, nil
+	glog.Infof("Decoded block range [%d, %d] - elapsed: %ds", lowBlock, hiBlock, (time.Now().Unix() - startTime))
+	return nil
 }
 
 func DecodeBlockByNumber(blockNumber uint64) (*common.Block, error) {
