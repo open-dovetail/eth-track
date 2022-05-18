@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"io/ioutil"
+	"sync"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -14,11 +16,14 @@ import (
 
 // AWS managed secret for redshift db user & password
 type s3Bucket struct {
+	sync.Mutex
 	name     string
 	region   string
+	profile  string
 	copyRole string
 	ctx      context.Context
 	client   *s3.Client
+	created  int64 // time when client was last created in seconds
 }
 
 var bucket *s3Bucket
@@ -42,11 +47,37 @@ func GetS3Bucket(bucketName, profile, region, copyRole string) (*s3Bucket, error
 	bucket = &s3Bucket{
 		name:     bucketName,
 		region:   region,
+		profile:  profile,
 		copyRole: copyRole,
 		ctx:      ctx,
 		client:   s3.NewFromConfig(cfg),
+		created:  time.Now().Unix(),
 	}
 	return bucket, nil
+}
+
+// refresh client before s3 credential expires, i.e., reset every 5 minutes
+func refreshClient() {
+	if time.Now().Unix() <= bucket.created+300 {
+		// do not refresh if it was created within the last 5 minutes
+		return
+	}
+
+	// get a lock so only one thread will reset the client
+	bucket.Lock()
+	defer bucket.Unlock()
+
+	if time.Now().Unix() > bucket.created+300 {
+		// refresh only if it was not already reset by another thread while waiting for the lock
+		cfg, err := config.LoadDefaultConfig(bucket.ctx,
+			config.WithRegion(bucket.region),
+			config.WithSharedConfigProfile(bucket.profile))
+		if err == nil {
+			glog.Infof("Refresh s3 connection for bucket %s region %s profile %s", bucket.name, bucket.region, bucket.profile)
+			bucket.created = time.Now().Unix()
+			bucket.client = s3.NewFromConfig(cfg)
+		}
+	}
 }
 
 func deleteS3File(name string) (*s3.DeleteObjectOutput, error) {
@@ -85,6 +116,7 @@ func deleteS3Folder(name string) (*s3.DeleteObjectsOutput, error) {
 }
 
 func writeS3File(name string, content []byte) (*s3.PutObjectOutput, error) {
+	refreshClient()
 	return bucket.client.PutObject(bucket.ctx, &s3.PutObjectInput{
 		Bucket:             aws.String(bucket.name),
 		Key:                aws.String(name),
