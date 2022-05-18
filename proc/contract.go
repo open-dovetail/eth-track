@@ -201,7 +201,7 @@ func parseABI(c *common.Contract) error {
 		return errors.Errorf("No ABI in contract %s", c.Address)
 	}
 
-	ab, err := abi.NewABI(c.ABI)
+	ab, err := safeNewABI(c.ABI)
 	if err != nil {
 		return errors.Wrapf(err, "'%s'", c.ABI)
 	}
@@ -333,6 +333,17 @@ func DecodeTransactionInput(input []byte, address string, blockTime int64) (*Dec
 		setContractEventTime(contract, blockTime)
 	}
 	return dec, nil
+}
+
+// catch panic from abi.NewABI(a)
+func safeNewABI(a string) (ab *abi.ABI, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			ab = nil
+			err = r.(error)
+		}
+	}()
+	return abi.NewABI(a)
 }
 
 // catch panic from abi decoder
