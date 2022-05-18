@@ -98,25 +98,28 @@ func InsertTransactions(transactions map[string]*common.Transaction, tx pgx.Tx, 
 }
 
 // write transactions of specified blocks to s3 as a csv file.
-func writeTransactionsToS3(blocks map[string]*common.Block, s3Folder string) error {
+func writeTransactionsToS3(blocks map[string]*common.Block, s3Folder string) (int, error) {
+	txCount := 0
 	if len(blocks) == 0 {
-		return nil
+		return txCount, nil
 	}
 
 	source := &copyFromTransactions{idx: -1}
+
 	for _, b := range blocks {
+		txCount += len(b.Transactions)
 		for _, v := range b.Transactions {
 			source.rows = append(source.rows, v)
 		}
 	}
 	data, err := composeCSVData(source)
 	if err != nil {
-		return err
+		return txCount, err
 	}
 
 	//fmt.Println("Write transactions to s3:", string(data))
 	s3Filename := fmt.Sprintf("%s/transactions.csv", s3Folder)
 	_, err = writeS3File(s3Filename, data)
 
-	return err
+	return txCount, err
 }

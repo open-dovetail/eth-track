@@ -87,6 +87,7 @@ func writeContractsToS3(contracts map[string]*common.Contract, csvFile string) e
 	}
 
 	//fmt.Println("Write contracts to s3:", string(data))
+	glog.Infof("Write %d contracts to s3", len(contracts))
 	_, err = writeS3File(csvFile, data)
 	return err
 }

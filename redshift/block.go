@@ -114,10 +114,12 @@ func writeBlocksToS3(blocks map[string]*common.Block, s3Folder string) error {
 		return nil
 	}
 
-	if err := writeTransactionsToS3(blocks, s3Folder); err != nil {
+	var err error
+	var txCount, logCount int
+	if txCount, err = writeTransactionsToS3(blocks, s3Folder); err != nil {
 		return err
 	}
-	if err := writeEventLogsToS3(blocks, s3Folder); err != nil {
+	if logCount, err = writeEventLogsToS3(blocks, s3Folder); err != nil {
 		return err
 	}
 
@@ -126,12 +128,13 @@ func writeBlocksToS3(blocks map[string]*common.Block, s3Folder string) error {
 	for _, v := range blocks {
 		source.rows = append(source.rows, v)
 	}
-	data, err := composeCSVData(source)
-	if err != nil {
+	var data []byte
+	if data, err = composeCSVData(source); err != nil {
 		return err
 	}
 
 	//fmt.Println("Write blocks to s3:", string(data))
+	glog.Infof("Write data to s3: %d blocks, %d transactions, %d event logs", len(blocks), txCount, logCount)
 	s3Filename := fmt.Sprintf("%s/blocks.csv", s3Folder)
 	_, err = writeS3File(s3Filename, data)
 

@@ -91,25 +91,27 @@ func InsertEventLogs(logs map[uint64]*common.EventLog, tx pgx.Tx, ctx context.Co
 }
 
 // write event logs of specified blocks to s3 as a csv file.
-func writeEventLogsToS3(blocks map[string]*common.Block, s3Folder string) error {
+func writeEventLogsToS3(blocks map[string]*common.Block, s3Folder string) (int, error) {
+	logCount := 0
 	if len(blocks) == 0 {
-		return nil
+		return logCount, nil
 	}
 
 	source := &copyFromEventLogs{idx: -1}
 	for _, b := range blocks {
+		logCount += len(b.Logs)
 		for _, v := range b.Logs {
 			source.rows = append(source.rows, v)
 		}
 	}
 	data, err := composeCSVData(source)
 	if err != nil {
-		return err
+		return logCount, err
 	}
 
 	//fmt.Println("Write event logs to s3:", string(data))
 	s3Filename := fmt.Sprintf("%s/logs.csv", s3Folder)
 	_, err = writeS3File(s3Filename, data)
 
-	return err
+	return logCount, err
 }
