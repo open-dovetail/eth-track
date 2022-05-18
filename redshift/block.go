@@ -159,8 +159,9 @@ func StoreBlocks(blocks map[string]*common.Block, s3Folder string) error {
 		strings.Join(transactionColumns(), ","), bucket.name, s3Folder, bucket.copyRole, bucket.region)
 	glog.Info("Execute sql: ", sql)
 	if _, err := tx.Exec(ctx, sql); err != nil {
+		glog.Warning("rollback copy transactions")
 		tx.Rollback(ctx)
-		//deleteS3Folder(s3Folder)
+		deleteS3Folder(s3Folder)
 		return err
 	}
 
@@ -169,8 +170,9 @@ func StoreBlocks(blocks map[string]*common.Block, s3Folder string) error {
 		strings.Join(eventLogColumns(), ","), bucket.name, s3Folder, bucket.copyRole, bucket.region)
 	glog.Info("Execute sql: ", sql)
 	if _, err := tx.Exec(ctx, sql); err != nil {
+		glog.Warning("rollback copy event logs")
 		tx.Rollback(ctx)
-		//deleteS3Folder(s3Folder)
+		deleteS3Folder(s3Folder)
 		return err
 	}
 
@@ -179,8 +181,9 @@ func StoreBlocks(blocks map[string]*common.Block, s3Folder string) error {
 		strings.Join(blockColumns(), ","), bucket.name, s3Folder, bucket.copyRole, bucket.region)
 	glog.Info("Execute sql: ", sql)
 	if _, err := tx.Exec(ctx, sql); err != nil {
+		glog.Warning("rollback copy blocks")
 		tx.Rollback(ctx)
-		//deleteS3Folder(s3Folder)
+		deleteS3Folder(s3Folder)
 		return err
 	}
 	err = tx.Commit(ctx)

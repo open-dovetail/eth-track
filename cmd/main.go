@@ -190,7 +190,7 @@ func schedule(job chan<- redshift.Interval, sig <-chan os.Signal, ctx context.Co
 	// schedule initial block gaps from database
 	blockCache, _ := redshift.GetBlockCache()
 	gaps := blockCache.GetIntervalGaps()
-	glog.Info("schedule to fill block gaps in database")
+	glog.Infof("schedule to fill block gaps in database: %v within total range %v", gaps, blockCache.GetScheduledBlocks())
 
 	var pendingJobs []redshift.Interval
 	for _, gap := range gaps {
