@@ -23,7 +23,7 @@ func setup() error {
 	}
 	secretName, ok := os.LookupEnv("AWS_SECRET")
 	if !ok {
-		secretName = "dev/ethdb/Redshift"
+		secretName = "dev/Redshift"
 	}
 	secret, err := GetAWSSecret(secretName, profile, region)
 	if err != nil {
@@ -31,7 +31,7 @@ func setup() error {
 	}
 	dbName, ok := os.LookupEnv("AWS_REDSHIFT")
 	if !ok {
-		dbName = "ethdb"
+		dbName = "dev"
 	}
 	if _, err := Connect(secret, dbName, 10); err != nil {
 		return errors.Wrapf(err, "Failed to connect to redshift db %s", dbName)

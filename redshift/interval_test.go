@@ -3,9 +3,9 @@ package redshift
 // Run all unit test: `go test -v`
 
 import (
+	"fmt"
 	"testing"
 
-	"github.com/open-dovetail/eth-track/common"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -118,23 +118,28 @@ func TestGetIntervalGaps(t *testing.T) {
 	//fmt.Println(gaps)
 }
 
-func TestQueryBlockInterval(t *testing.T) {
-	blocks, err := GetBlockCache()
-	assert.NoError(t, err, "query block interval should not throw error")
-	//fmt.Println(blocks)
-	blocks.AddBlock(10)
-	blocks.AddBlock(9)
-	blocks.AddBlock(20)
-	//fmt.Println(blocks)
-	err = blocks.SaveNextInterval()
-	assert.NoError(t, err, "save block interval should not throw error")
-	//fmt.Println(blocks)
+func TestInitGaps(t *testing.T) {
+	//secret, err := GetAWSSecret("dev/Redshift", "oocto", "us-west-2")
+	//_, err = Connect(secret, "dev", 2)
+	//require.NoError(t, err, "connect to redshift should not throw exception")
+	bcache, err := GetBlockCache()
+	gaps := bcache.GetIntervalGaps()
+	fmt.Println("Processing gaps", gaps, "Range", bcache.scheduled)
 
-	// verify the saved progress
-	p, err := QueryProgress(common.AddTransaction)
-	require.NoError(t, err, "query progress should not throw exception")
-	assert.NotNil(t, p, "query result should not be empty")
-
-	assert.Equal(t, blocks.prev.High, p.HiBlock, "query result does not match HiBlock")
-	assert.Equal(t, blocks.prev.Low, p.LowBlock, "query result does not match LowBlock")
+	bi := NewBlockInterval([]Interval{})
+	// query blocks and set blocks saved in the blocks table
+	blocks, err := SelectBlocks(0, 0)
+	require.NoError(t, err, "query blocks should not throw exception")
+	for _, v := range blocks {
+		bi.AddBlock(uint64(*v))
+	}
+	if len(bi.working) > 0 {
+		// initialize interval after gaps are filled in database
+		bi.scheduled = Interval{
+			Low:  bi.working[0].Low,
+			High: bi.working[len(bi.working)-1].High,
+		}
+	}
+	gaps = bi.GetIntervalGaps()
+	fmt.Println("Database gaps", gaps, "Range", bi.scheduled)
 }

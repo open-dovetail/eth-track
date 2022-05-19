@@ -187,6 +187,6 @@ func StoreBlocks(blocks map[string]*common.Block, s3Folder string) error {
 		return err
 	}
 	err = tx.Commit(ctx)
-	deleteS3Folder(s3Folder)
+	//deleteS3Folder(s3Folder)
 	return err
 }
