@@ -160,7 +160,7 @@ func csvValues(args []interface{}) (string, error) {
 // composes sql statement to insert multiple rows.
 // this work-around issues that CopyFrom does not work with redshift
 func composeBatchInsert(tableName string, columns []string, srcRows pgx.CopyFromSource) (string, error) {
-	if srcRows == nil || !srcRows.Next() {
+	if srcRows == nil {
 		return "", nil
 	}
 	buf := bytes.Buffer{}
@@ -188,7 +188,7 @@ func composeBatchInsert(tableName string, columns []string, srcRows pgx.CopyFrom
 // compose CSV file content for copy multiple records
 // the CSV file can be written to s3 and then copy to redshift, which may be more stable than direct insert statement.
 func composeCSVData(srcRows pgx.CopyFromSource) ([]byte, error) {
-	if srcRows == nil || !srcRows.Next() {
+	if srcRows == nil {
 		return nil, nil
 	}
 	buf := bytes.Buffer{}
