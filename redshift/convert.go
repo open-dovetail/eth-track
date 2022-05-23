@@ -21,6 +21,10 @@ import (
 
 // truncate a string to a max length
 func truncateString(s string, size int) string {
+	if len(s) == 42 && strings.HasPrefix(s, "0x") {
+		// normalize contract address
+		return strings.ToLower(s[2:])
+	}
 	if len(s) > size {
 		if glog.V(1) {
 			glog.Warningf("Truncated string length %d to %d", len(s), size)
