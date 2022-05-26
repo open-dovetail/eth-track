@@ -12,7 +12,6 @@ import (
 
 	"github.com/pkg/errors"
 
-	"github.com/open-dovetail/eth-track/common"
 	"github.com/open-dovetail/eth-track/proc"
 	"github.com/open-dovetail/eth-track/redshift"
 )
@@ -311,9 +310,4 @@ func work(gid int, job <-chan redshift.Interval, sig <-chan os.Signal, ctx conte
 			}
 		}
 	}
-}
-
-func simulator(hiBlock, lowBlock uint64) (lastBlock *common.Block, firstBlock *common.Block, err error) {
-	time.Sleep(time.Second * 2)
-	return &common.Block{Number: hiBlock}, &common.Block{Number: lowBlock}, nil
 }

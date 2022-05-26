@@ -2,17 +2,24 @@ package redshift
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/georgysavva/scany/pgxscan"
+	"github.com/golang/glog"
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
 )
 
+// Amazon redshift connection
 type RedshiftConn struct {
-	url  string
-	ctx  context.Context
-	pool *pgxpool.Pool
+	sync.Mutex
+	url     string
+	ctx     context.Context
+	pool    *pgxpool.Pool
+	created int64
 }
 
 // singleton redshift connection pool
@@ -28,8 +35,48 @@ func Connect(secret *PasswordSecret, dbName string, poolSize int) (*RedshiftConn
 	if err != nil {
 		return nil, err
 	}
-	db = &RedshiftConn{url, ctx, pool}
+	db = &RedshiftConn{
+		url:     url,
+		ctx:     ctx,
+		pool:    pool,
+		created: time.Now().Unix(),
+	}
 	return db, nil
+}
+
+// reset redshift connection pool
+func (c *RedshiftConn) Reconnect() error {
+	// get a lock so only one thread will reset the connection
+	c.Lock()
+	defer c.Unlock()
+
+	var err error
+	if c.pool == nil {
+		err = errors.New("Invalid redshift connection pool")
+	}
+
+	// do nothing if already tried by another thread within the last hour
+	if time.Now().Unix() > c.created+3600 {
+		if c.pool != nil {
+			c.pool.Close()
+		}
+
+		// retry connection for 45 minutes
+		var i int64
+		for {
+			if c.pool, err = pgxpool.Connect(c.ctx, c.url); err == nil {
+				c.created = time.Now().Unix()
+				return nil
+			}
+			glog.Warning("Failed to connect to redshift: ", err)
+			i++
+			if i > 9 {
+				break
+			}
+			time.Sleep(time.Duration(i) * time.Minute)
+		}
+	}
+	return err
 }
 
 func (c *RedshiftConn) Close() {

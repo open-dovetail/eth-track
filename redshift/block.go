@@ -149,8 +149,15 @@ func StoreBlocks(blocks map[string]*common.Block, s3Folder string) error {
 
 	tx, err := db.Begin()
 	if err != nil {
-		glog.Errorf("Failed to start db tx: %+v", err)
-		return err
+		// handle exception of redshift offline
+		if err := db.Reconnect(); err != nil {
+			glog.Errorf("Failed to reconnect to db: %+v", err)
+			return err
+		}
+		if tx, err = db.Begin(); err != nil {
+			glog.Errorf("Failed to start db tx: %+v", err)
+			return err
+		}
 	}
 	ctx := context.Background()
 
