@@ -101,7 +101,6 @@ func StoreContracts(contracts map[string]*common.Contract) error {
 
 	tx, err := db.Begin()
 	if err != nil {
-		glog.Errorf("Failed to start db tx: %+v", err)
 		return err
 	}
 

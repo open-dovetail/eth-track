@@ -139,7 +139,19 @@ func (c *RedshiftConn) Exec(sql string, args ...interface{}) error {
 // tx.Commit(ctx)
 func (c *RedshiftConn) Begin() (pgx.Tx, error) {
 	c.ctx = context.Background()
-	return c.pool.Begin(c.ctx)
+	tx, err := c.pool.Begin(c.ctx)
+	if err != nil {
+		// handle exception of redshift offline
+		if err := c.Reconnect(); err != nil {
+			glog.Errorf("Failed to reconnect to db: %+v", err)
+			return nil, err
+		}
+		if tx, err = c.pool.Begin(c.ctx); err != nil {
+			glog.Errorf("Failed to start db tx: %+v", err)
+			return nil, err
+		}
+	}
+	return tx, err
 }
 
 func (c *RedshiftConn) CopyFrom(tableName pgx.Identifier, columnNames []string, rowSrc pgx.CopyFromSource) (int64, error) {

@@ -29,6 +29,7 @@ type Config struct {
 	awsRedshift    string // redshift DB name
 	awsS3Bucket    string // name of AWS s3 bucket
 	awsCopyRole    string // aws role for copying csv from s3 to redshift
+	oldBlocks      bool   // true to collect old blocks
 }
 
 var config = &Config{}
@@ -47,6 +48,7 @@ func init() {
 	flag.StringVar(&config.awsRedshift, "redshift", "ethdb", "Redshift database name")
 	flag.StringVar(&config.awsS3Bucket, "s3Bucket", "dev-eth-track", "AWS s3 bucket name")
 	flag.StringVar(&config.awsCopyRole, "copyRole", "", "AWS role to copy csv from s3 to redshift")
+	flag.BoolVar(&config.oldBlocks, "oldBlocks", true, "Collect old blocks")
 }
 
 // check env variables, which overrides the commandline input
@@ -252,13 +254,18 @@ func prepareJobs(blockCache *redshift.BlockInterval) ([]redshift.Interval, error
 			High: hiBlock,
 		}, result)
 	}
-	lowBlock := scheduled.Low - uint64(config.threads*config.batchSize)
-	glog.Infof("schedule old blocks of range [%d, %d)", lowBlock, scheduled.Low)
-	result = addBatchJob(redshift.Interval{
-		Low:  lowBlock,
-		High: scheduled.Low - 1,
-	}, result)
-	blockCache.SetScheduledBlocks(redshift.Interval{Low: lowBlock, High: hiBlock})
+	if config.oldBlocks {
+		lowBlock := scheduled.Low - uint64(config.threads*config.batchSize)
+		glog.Infof("schedule old blocks of range [%d, %d)", lowBlock, scheduled.Low)
+		result = addBatchJob(redshift.Interval{
+			Low:  lowBlock,
+			High: scheduled.Low - 1,
+		}, result)
+		blockCache.SetScheduledBlocks(redshift.Interval{Low: lowBlock, High: hiBlock})
+	} else {
+		blockCache.SetScheduledBlocks(redshift.Interval{Low: scheduled.Low, High: hiBlock})
+		time.Sleep(time.Minute)
+	}
 
 	return result, nil
 }
