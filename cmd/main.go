@@ -216,6 +216,9 @@ func schedule(job chan<- redshift.Interval, sig <-chan os.Signal, ctx context.Co
 				}
 
 				// send a job since the job channel has more capacity
+				if len(pendingJobs) == 0 {
+					break // no more pending jobs, wait for the next cycle
+				}
 				v := pendingJobs[0]
 				pendingJobs = pendingJobs[1:]
 				job <- v
