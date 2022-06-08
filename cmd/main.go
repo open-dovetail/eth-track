@@ -223,8 +223,13 @@ func schedule(job chan<- redshift.Interval, sig <-chan os.Signal, ctx context.Co
 				pendingJobs = pendingJobs[1:]
 				job <- v
 			}
-			// wait 1 second for workers to catch up before trying again
-			time.Sleep(time.Second)
+			if config.oldBlocks {
+				// wait 5 seconds for workers to catch up before trying again
+				time.Sleep(5 * time.Second)
+			} else {
+				glog.Info("wait 10 minutes before scheduling newer blocks")
+				time.Sleep(10 * time.Minute)
+			}
 		}
 	}
 }
@@ -266,9 +271,8 @@ func prepareJobs(blockCache *redshift.BlockInterval) ([]redshift.Interval, error
 		}, result)
 		blockCache.SetScheduledBlocks(redshift.Interval{Low: lowBlock, High: hiBlock})
 	} else {
-		glog.Infof("wait 10 minutes before scheduling newer blocks than [%d, %d]", scheduled.Low, hiBlock)
+		glog.Infof("update scheduled blocks [%d, %d]", scheduled.Low, hiBlock)
 		blockCache.SetScheduledBlocks(redshift.Interval{Low: scheduled.Low, High: hiBlock})
-		time.Sleep(10 * time.Minute)
 	}
 
 	return result, nil
