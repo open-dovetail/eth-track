@@ -266,6 +266,7 @@ func prepareJobs(blockCache *redshift.BlockInterval) ([]redshift.Interval, error
 		}, result)
 		blockCache.SetScheduledBlocks(redshift.Interval{Low: lowBlock, High: hiBlock})
 	} else {
+		glog.Infof("wait 1 minute before scheduling newer blocks than [%d, %d]", scheduled.Low, hiBlock)
 		blockCache.SetScheduledBlocks(redshift.Interval{Low: scheduled.Low, High: hiBlock})
 		time.Sleep(time.Minute)
 	}
