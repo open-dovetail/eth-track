@@ -48,7 +48,7 @@ func init() {
 	flag.StringVar(&config.awsRedshift, "redshift", "ethdb", "Redshift database name")
 	flag.StringVar(&config.awsS3Bucket, "s3Bucket", "dev-eth-track", "AWS s3 bucket name")
 	flag.StringVar(&config.awsCopyRole, "copyRole", "", "AWS role to copy csv from s3 to redshift")
-	flag.BoolVar(&config.oldBlocks, "oldBlocks", true, "Collect old blocks")
+	flag.BoolVar(&config.oldBlocks, "oldBlocks", false, "Collect old blocks")
 }
 
 // check env variables, which overrides the commandline input
